@@ -44,13 +44,12 @@ jobs:
         path: './'
         if_no_artifact_found: warn
 
-    - name: Run Python script to check frined-links
-      env:
-        PROXY_URL: ${{ secrets.PROXY_URL }}
-        SOURCE_URL: ${{ secrets.SOURCE_URL }}
-      run: |
-        echo "SOURCE_URL: $SOURCE_URL"
-        python main.py
+- name: Run Python script to check frined-links
+  env:
+     LIJIANGAPI_TOKEN: ${{ secrets.LIJIANGAPI_TOKEN }}
+     PROXY_URL: ${{ secrets.PROXY_URL }}
+  run: python test-friend-in-txt.py
+
 
     - name: Upload result.json as artifact
       uses: actions/upload-artifact@v4
