@@ -48,7 +48,7 @@ jobs:
       env:
          LIJIANGAPI_TOKEN: ${{ secrets.LIJIANGAPI_TOKEN }}
          PROXY_URL: ${{ secrets.PROXY_URL }}
-      run: python test-friend-in-txt.py
+      run: python main.py
 
     - name: Upload result.json as artifact
       uses: actions/upload-artifact@v4
