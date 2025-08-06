@@ -56,8 +56,8 @@ if PROXY_URL_TEMPLATE:
 else:
     logging.info("未提供代理 URL")
 
-# 明确日志说明转发服务的拼接格式
-logging.info(f"转发服务格式确认: 目标域名https://www.dao.js.cn 将访问 {FORWARD_SERVICE_BASE}https://www.dao.js.cn")
+# 明确日志说明转发服务的访问逻辑
+logging.info(f"转发服务访问逻辑: 访问目标链接https://www.dao.js.cn时，将直接请求{FORWARD_SERVICE_BASE}https://www.dao.js.cn")
 
 def request_url(session, url, headers=HEADERS, desc="", timeout=15, verify=True, **kwargs):
     """统一封装的 GET 请求函数"""
@@ -123,34 +123,40 @@ def fetch_origin_data(origin_path):
         return []
 
 def check_link(item, session):
-    link = item['link']
-    logging.info(f"开始检查链接: {link}")
+    original_link = item['link']
+    logging.info(f"开始检查链接: {original_link}")
     
-    # 优先尝试转发服务访问，严格按照指定格式拼接
-    forward_url = f"{FORWARD_SERVICE_BASE}{link}"  # 例如：https://github.snsou.cn/ + https://www.dao.js.cn
-    logging.info(f"[转发服务] 准备访问拼接后的URL: {forward_url} (原始链接: {link})")
+    # 直接使用转发服务URL作为实际访问地址，不访问原始链接
+    forward_url = f"{FORWARD_SERVICE_BASE}{original_link}"
+    logging.info(f"[转发服务] 直接访问转发URL: {forward_url} (替代原始链接: {original_link})")
     forward_response, forward_latency = request_url(session, forward_url, desc="转发服务访问")
+    
     if forward_response and forward_response.status_code == 200:
-        logging.info(f"[转发服务] 成功访问: {link} ，状态码 200，延迟 {forward_latency} 秒")
+        logging.info(f"[转发服务] 成功访问: {original_link} (通过 {forward_url})，状态码 200，延迟 {forward_latency} 秒")
         return item, forward_latency
+    elif forward_response:
+        logging.warning(f"[转发服务] 状态码异常: {original_link} (通过 {forward_url}) -> {forward_response.status_code}")
+    else:
+        logging.warning(f"[转发服务] 请求失败: {original_link} (通过 {forward_url})")
     
     # 转发服务失败后尝试其他方式
-    logging.warning(f"[转发服务] 访问失败，尝试直接访问: {link}")
-    direct_response, direct_latency = request_url(session, link, desc="直接访问")
-    if direct_response and direct_response.status_code == 200:
-        logging.info(f"[直接访问] 成功访问: {link} ，状态码 200，延迟 {direct_latency} 秒")
-        return item, direct_latency
-    
     if PROXY_URL_TEMPLATE:
-        logging.warning(f"[直接访问] 失败，尝试代理访问: {link}")
-        proxy_url = PROXY_URL_TEMPLATE.format(link)
+        logging.warning(f"[转发服务] 失败，尝试代理访问: {original_link}")
+        proxy_url = PROXY_URL_TEMPLATE.format(original_link)
         proxy_response, proxy_latency = request_url(session, proxy_url, desc="代理访问")
         if proxy_response and proxy_response.status_code == 200:
-            logging.info(f"[代理访问] 成功访问: {link} ，状态码 200，延迟 {proxy_latency} 秒")
+            logging.info(f"[代理访问] 成功访问: {original_link} ，状态码 200，延迟 {proxy_latency} 秒")
             return item, proxy_latency
     
+    # 尝试直接访问原始链接（仅作为最后的备选）
+    logging.warning(f"[代理访问] 失败，尝试直接访问原始链接: {original_link}")
+    direct_response, direct_latency = request_url(session, original_link, desc="直接访问")
+    if direct_response and direct_response.status_code == 200:
+        logging.info(f"[直接访问] 成功访问: {original_link} ，状态码 200，延迟 {direct_latency} 秒")
+        return item, direct_latency
+    
     # 所有方式失败，加入API检查队列
-    logging.info(f"[所有方式] 均失败，将 {link} 加入API检查队列")
+    logging.info(f"[所有方式] 均失败，将 {original_link} 加入API检查队列")
     api_request_queue.put(item)
     return item, -1
 
@@ -248,3 +254,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
