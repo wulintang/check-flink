@@ -139,23 +139,30 @@ def handle_api_requests(session):
         time.sleep(0.2)
         item = api_request_queue.get()
         link = item['link']
-        api_url = f"https://v2.xxapi.cn/api/status?url={link}"
-        response, latency = request_url(session, api_url,headers=RAW_HEADERS, desc="API 检查", timeout=30)
+        api_url = f"https://v.api.aa1.cn/api/httpcode/?url={link}"
+        response, latency = request_url(session, api_url, headers=RAW_HEADERS, desc="API 检查", timeout=30)
+        
         if response:
             try:
                 res_json = response.json()
-                if int(res_json.get("code")) == 200 and int(res_json.get("data")) == 200:
-                    logging.info(f"[API] 成功访问: {link} ，状态码 200")
+                # 根据实际返回结构修改判断条件
+                # API返回的状态码在httpcode字段中，如301
+                if int(res_json.get("code")) == 200:  # API自身调用成功
+                    http_code = res_json.get("httpcode")
+                    item['http_code'] = http_code  # 保存实际的HTTP状态码
                     item['latency'] = latency
+                    logging.info(f"[API] 访问 {link} ，状态码 {http_code}")
                 else:
-                    logging.warning(f"[API] 状态异常: {link} -> [{res_json.get('code')}, {res_json.get('data')}]")
+                    logging.warning(f"[API] 调用失败: {link} -> 错误码 {res_json.get('code')}")
                     item['latency'] = -1
             except Exception as e:
                 logging.error(f"[API] 解析响应失败: {link}，错误: {e}")
                 item['latency'] = -1
         else:
             item['latency'] = -1
+            
         results.append(item)
+    
     return results
 
 def main():
