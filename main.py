@@ -123,7 +123,7 @@ def check_link(item, session):
     # 尝试直接访问
     direct_response, direct_latency = request_url(session, link, desc="直接访问")
     if direct_response and direct_response.status_code == 200:
-        logging.info(f"[直接访问] 成功访问: {link} ，延迟 {direct_latency} 秒")
+        logging.info(f"[直接访问] 成功访问: {link} ，状态码 200，延迟 {direct_latency} 秒")
         return item, direct_latency
     
     # 尝试代理访问
@@ -131,7 +131,7 @@ def check_link(item, session):
         proxy_url = PROXY_URL_TEMPLATE.format(link)
         proxy_response, proxy_latency = request_url(session, proxy_url, desc="代理访问")
         if proxy_response and proxy_response.status_code == 200:
-            logging.info(f"[代理访问] 成功访问: {link} ，延迟 {proxy_latency} 秒")
+            logging.info(f"[代理访问] 成功访问: {link} ，状态码 200，延迟 {proxy_latency} 秒")
             return item, proxy_latency
         elif proxy_response:
             logging.warning(f"[代理访问] 状态码异常: {link} -> {proxy_response.status_code}")
@@ -140,7 +140,7 @@ def check_link(item, session):
     forward_url = f"{FORWARD_SERVICE_URL}{link}"
     forward_response, forward_latency = request_url(session, forward_url, desc="转发服务访问")
     if forward_response and forward_response.status_code == 200:
-        logging.info(f"[转发服务] 成功访问: {link} ，延迟 {forward_latency} 秒")
+        logging.info(f"[转发服务] 成功访问: {link} ，状态码 200，延迟 {forward_latency} 秒")
         return item, forward_latency
     elif forward_response:
         logging.warning(f"[转发服务] 状态码异常: {link} -> {forward_response.status_code}")
@@ -238,3 +238,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
