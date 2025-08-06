@@ -271,16 +271,12 @@ def handle_api_requests():
             
             response, latency = request_url(session, api_url, desc="API检查")
             if response:
-                try:
-                    res_json = response.json()
-                    if int(res_json.get("code", -1)) == 200 and int(res_json.get("data", -1)) == 200:
-                        logging.info(f"[API] 确认可访问: {link}")
-                        results.append((item, latency))
-                    else:
-                        logging.warning(f"[API] 确认不可访问: {link}，响应: {res_json}")
-                        results.append((item, -1))
-                except Exception as e:
-                    logging.error(f"[API] 解析失败: {link}，错误: {e}")
+                # 只根据HTTP状态码判断，忽略响应内容
+                if response.status_code == 200:
+                    logging.info(f"[API] 确认可访问: {link} (HTTP状态码: 200)")
+                    results.append((item, latency))
+                else:
+                    logging.warning(f"[API] 不可访问: {link} (HTTP状态码: {response.status_code})")
                     results.append((item, -1))
             else:
                 logging.warning(f"[API] 请求失败: {link}")
