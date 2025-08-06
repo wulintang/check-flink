@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>友链状态检测</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdn.jsdelivr.net.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
     
     <!-- Tailwind 配置 -->
     <script>
@@ -92,10 +92,10 @@
         <footer class="text-center text-gray-500 pt-6 border-t border-gray-100">
             <div class="mb-4">
                 <p class="inline-block mr-6">
-                    网站总请求量：<span id="vercount_value_site_pv" class="font-medium text-info">0</span>
+                    网站总请求量：<span id="vercount_value_site_pv" class="font-medium text-info">加载中...</span>
                 </p>
                 <p class="inline-block">
-                    独立访客数：<span id="vercount_value_site_uv" class="font-medium text-info">0</span>
+                    独立访客数：<span id="vercount_value_site_uv" class="font-medium text-info">加载中...</span>
                 </p>
             </div>
             <p>数据来源: <a href="https://www.dao.js.cn" class="text-primary hover:underline font-medium" target="_blank">懋和道人</a>、技术支撑<a href="https://www.liushen.fun/" class="text-primary hover:underline font-medium" target="_blank">清羽飞扬</a></p>
@@ -104,36 +104,55 @@
     </div>
 
     <script>
-        // 1. 访问量统计（使用localStorage持久化，关闭浏览器不丢失）
-        function initTrafficStats() {
-            // 从本地存储获取数据，没有则初始化
-            const stats = JSON.parse(localStorage.getItem('siteTrafficStats')) || {
-                pv: 0,  // 总请求量
-                uv: 0,  // 独立访客数
-                lastVisit: null
-            };
-            
-            // 生成唯一访客标识（简单实现）
-            const visitorId = localStorage.getItem('visitorId');
-            if (!visitorId) {
-                // 新访客，生成唯一ID并存储
-                localStorage.setItem('visitorId', Math.random().toString(36).substr(2, 9));
-                stats.uv += 1;  // 新访客UV+1
+        // 从环境变量获取Umami配置（通过GitHub Secrets注入）
+        const UMAMI_CONFIG = {
+            websiteId: 'ed1ec7f7-e3d0-41e9-b913-9f58f25b717f',
+            apiUrl: 'https://ji.dao.js.cn/api',
+            // 实际部署时会被GitHub Secrets替换
+            token: '${UMAMI_TOKEN}'
+        };
+
+        // 获取Umami统计数据（带token认证）
+        function fetchUmamiStats() {
+            // 检查token是否配置
+            if (!UMAMI_CONFIG.token || UMAMI_CONFIG.token === '${UMAMI_TOKEN}') {
+                console.warn('Umami token未配置，请在GitHub Secrets中添加UMAMI_TOKEN');
+                document.getElementById('vercount_value_site_pv').textContent = '未配置';
+                document.getElementById('vercount_value_site_uv').textContent = '未配置';
+                return;
             }
+
+            // 时间范围：过去一年到今天
+            const startDate = new Date(new Date().setFullYear(new Date().getFullYear() - 1)).toISOString().split('T')[0];
+            const endDate = new Date().toISOString().split('T')[0];
             
-            // 每次访问PV+1
-            stats.pv += 1;
-            stats.lastVisit = new Date().toISOString();
-            
-            // 保存到本地存储（持久化）
-            localStorage.setItem('siteTrafficStats', JSON.stringify(stats));
-            
-            // 更新页面显示
-            document.getElementById('vercount_value_site_pv').textContent = stats.pv.toLocaleString();
-            document.getElementById('vercount_value_site_uv').textContent = stats.uv.toLocaleString();
+            // 构建API请求
+            fetch(`${UMAMI_CONFIG.apiUrl}/websites/${UMAMI_CONFIG.websiteId}/stats?start_at=${startDate}&end_at=${endDate}&metrics=pageviews,visitors`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${UMAMI_CONFIG.token}`,
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP错误: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                // 显示PV和UV数据
+                document.getElementById('vercount_value_site_pv').textContent = data.pageviews.toLocaleString();
+                document.getElementById('vercount_value_site_uv').textContent = data.visitors.toLocaleString();
+            })
+            .catch(error => {
+                console.error('Umami统计数据获取失败:', error);
+                document.getElementById('vercount_value_site_pv').textContent = '获取失败';
+                document.getElementById('vercount_value_site_uv').textContent = '获取失败';
+            });
         }
         
-        // 2. 初始化友链数据
+        // 初始化友链数据
         function initLinkData() {
             fetch('/result.json')
                 .then(response => {
@@ -215,8 +234,8 @@
         
         // 页面加载时初始化
         window.addEventListener('DOMContentLoaded', () => {
-            initTrafficStats();  // 初始化访问量统计（持久化）
-            initLinkData();      // 初始化友链数据
+            fetchUmamiStats();  // 获取Umami统计数据
+            initLinkData();     // 初始化友链数据
         });
     </script>
 </body>
