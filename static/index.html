@@ -41,6 +41,25 @@
             .card-transition {
                 transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
             }
+            .footer-item {
+                @apply text-gray-500 text-sm my-2;
+            }
+            .footer-separator {
+                @apply mx-3 text-gray-400;
+            }
+            .pulse-animation {
+                animation: pulse 2s infinite ease-in-out;
+            }
+            @keyframes pulse {
+                0%, 100% {
+                    transform: scale(1);
+                    opacity: 1;
+                }
+                50% {
+                    transform: scale(1.2);
+                    opacity: 0.7;
+                }
+            }
         }
     </style>
 </head>
@@ -88,68 +107,83 @@
             </div>
         </div>
         
-        <!-- 页脚（包含访问量统计，底部展示） -->
-        <footer class="text-center text-gray-500 pt-6 border-t border-gray-100">
-            <div class="mb-4">
-                <p class="inline-block mr-6">
-                    网站总请求量：<span id="vercount_value_site_pv" class="font-medium text-info">加载中...</span>
-                </p>
-                <p class="inline-block">
-                    独立访客数：<span id="vercount_value_site_uv" class="font-medium text-info">加载中...</span>
-                </p>
-            </div>
-            <p>数据来源: <a href="https://www.dao.js.cn" class="text-primary hover:underline font-medium" target="_blank">懋和道人</a>、技术支撑<a href="https://www.liushen.fun/" class="text-primary hover:underline font-medium" target="_blank">清羽飞扬</a></p>
-            <p>所属地址：<a href="https://github.com/willow-god/check-flink" class="text-primary hover:underline font-medium" target="_blank">check-flink</a></p>
+        <!-- 页脚（所有分隔符完全统一） -->
+        <footer class="text-center pt-6 border-t border-gray-100">
+            <p class="footer-item">
+                网站总请求量：<span id="vercount_value_site_pv" class="font-medium text-info">加载中...</span>
+                <span class="footer-separator">|</span>
+                独立访客数：<span id="vercount_value_site_uv" class="font-medium text-info">加载中...</span>
+            </p>
+            <p class="footer-item">
+                数据来源：<a href="https://www.dao.js.cn" class="text-primary hover:underline font-medium" target="_blank">懋和道人</a>
+                <span class="footer-separator">|</span>
+                技术支撑：<a href="https://www.liushen.fun/" class="text-primary hover:underline font-medium" target="_blank">清羽飞扬</a>
+            </p>
+            <p class="footer-item">
+                所属地址：<a href="https://github.com/willow-god/check-flink" class="text-primary hover:underline font-medium" target="_blank">check-flink</a>
+            </p>
         </footer>
     </div>
 
     <script>
-        // 从环境变量获取Umami配置（通过GitHub Secrets注入）
+        // 核心配置
         const UMAMI_CONFIG = {
-            websiteId: 'ed1ec7f7-e3d0-41e9-b913-9f58f25b717f',
-            apiUrl: 'https://ji.dao.js.cn/api',
-            // 实际部署时会被GitHub Secrets替换
-            token: '${UMAMI_TOKEN}'
+            apiBaseUrl: 'https://ji.dao.js.cn',
+            websiteId: 'f85f96d5-c3a1-48ac-9a1a-aa7b98246004',
+            token: '${UMAMI_TOKEN}',
+            cacheKey: 'umami_total_stats',
+            cacheTime: 600000 // 10分钟缓存
         };
 
-        // 获取Umami统计数据（带token认证）
-        function fetchUmamiStats() {
-            // 检查token是否配置
-            if (!UMAMI_CONFIG.token || UMAMI_CONFIG.token === '${UMAMI_TOKEN}') {
-                console.warn('Umami token未配置，请在GitHub Secrets中添加UMAMI_TOKEN');
-                document.getElementById('vercount_value_site_pv').textContent = '未配置';
-                document.getElementById('vercount_value_site_uv').textContent = '未配置';
-                return;
+        // 获取总PV和UV数据
+        async function fetchTotalStats() {
+            // 检查缓存
+            if (localStorage.getItem(UMAMI_CONFIG.cacheKey)) {
+                const cache = JSON.parse(localStorage.getItem(UMAMI_CONFIG.cacheKey));
+                if (Date.now() - cache.timestamp < UMAMI_CONFIG.cacheTime) {
+                    updateStatsUI(cache.data);
+                    return;
+                }
             }
 
-            // 时间范围：过去一年到今天
-            const startDate = new Date(new Date().setFullYear(new Date().getFullYear() - 1)).toISOString().split('T')[0];
-            const endDate = new Date().toISOString().split('T')[0];
-            
-            // 构建API请求
-            fetch(`${UMAMI_CONFIG.apiUrl}/websites/${UMAMI_CONFIG.websiteId}/stats?start_at=${startDate}&end_at=${endDate}&metrics=pageviews,visitors`, {
-                method: 'GET',
-                headers: {
-                    'Authorization': `Bearer ${UMAMI_CONFIG.token}`,
-                    'Content-Type': 'application/json'
-                }
-            })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP错误: ${response.status}`);
-                }
-                return response.json();
-            })
-            .then(data => {
-                // 显示PV和UV数据
-                document.getElementById('vercount_value_site_pv').textContent = data.pageviews.toLocaleString();
-                document.getElementById('vercount_value_site_uv').textContent = data.visitors.toLocaleString();
-            })
-            .catch(error => {
-                console.error('Umami统计数据获取失败:', error);
+            try {
+                // 计算时间范围：从年初到现在
+                const start = new Date(new Date().getFullYear(), 0, 1).getTime();
+                const end = Date.now();
+
+                const response = await fetch(`${UMAMI_CONFIG.apiBaseUrl}/api/websites/${UMAMI_CONFIG.websiteId}/stats?` + 
+                    new URLSearchParams({ startAt: start, endAt: end }), {
+                    headers: {
+                        'Authorization': `Bearer ${UMAMI_CONFIG.token}`
+                    }
+                });
+
+                if (!response.ok) throw new Error(`HTTP错误: ${response.status}`);
+                
+                const data = await response.json();
+                const stats = {
+                    total_pv: data.pageviews?.value || 0,
+                    total_uv: data.visitors?.value || 0
+                };
+
+                // 保存缓存
+                localStorage.setItem(UMAMI_CONFIG.cacheKey, JSON.stringify({
+                    timestamp: Date.now(),
+                    data: stats
+                }));
+
+                updateStatsUI(stats);
+            } catch (error) {
+                console.error('获取统计数据失败:', error);
                 document.getElementById('vercount_value_site_pv').textContent = '获取失败';
                 document.getElementById('vercount_value_site_uv').textContent = '获取失败';
-            });
+            }
+        }
+
+        // 更新统计数据到页面
+        function updateStatsUI(data) {
+            document.getElementById('vercount_value_site_pv').textContent = data.total_pv.toLocaleString();
+            document.getElementById('vercount_value_site_uv').textContent = data.total_uv.toLocaleString();
         }
         
         // 初始化友链数据
@@ -198,7 +232,7 @@
                                 </h3>
                                 <span class="flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
                                     ${isSuccess ? 'bg-success/10 text-success' : 'bg-danger/10 text-danger'}">
-                                    <span class="w-1.5 h-1.5 rounded-full mr-1 ${isSuccess ? 'bg-success' : 'bg-danger'}"></span>
+                                    <span class="w-1.5 h-1.5 rounded-full mr-1 ${isSuccess ? 'bg-success pulse-animation' : 'bg-danger'}"></span>
                                     ${isSuccess ? '正常' : '错误'}
                                 </span>
                             </div>
@@ -234,7 +268,7 @@
         
         // 页面加载时初始化
         window.addEventListener('DOMContentLoaded', () => {
-            fetchUmamiStats();  // 获取Umami统计数据
+            fetchTotalStats();  // 获取总PV和UV
             initLinkData();     // 初始化友链数据
         });
     </script>
