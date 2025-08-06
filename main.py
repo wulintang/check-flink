@@ -2,13 +2,12 @@ import os
 import csv
 import json
 import time
-import random
 import logging
 import requests
 import warnings
 from queue import Queue
 from datetime import datetime
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 import concurrent.futures
 
 # 设置日志
@@ -20,165 +19,53 @@ logging.basicConfig(
 
 warnings.filterwarnings("ignore", message="Unverified HTTPS request is being made.*")
 
-# 更丰富的User-Agent池（覆盖更多设备和浏览器）
-USER_AGENTS = [
-    # 桌面浏览器
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    # 移动设备
-    "Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (iPad; CPU OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
-    # 冷门浏览器
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/125.0.2535.85",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/115.0"
-]
+# 请求头统一配置
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/123.0.0.0 Safari/537.36 "
+        "(check-flink/1.0; +https://github.com/willow-god/check-flink)"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "X-Check-Flink": "1.0"
+}
 
-# 模拟真实浏览器的请求头（动态生成，更贴近真实）
-def get_browser_headers(url):
-    parsed_url = urlparse(url)
-    referer = urlunparse((parsed_url.scheme, parsed_url.netloc, '', '', '', ''))
-    
-    # 基础 headers（所有请求都会包含）
-    headers = {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": random.choice([
-            "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5",
-            "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
-            "zh-CN,zh;q=0.9"
-        ]),
-        "Connection": "keep-alive",
-        "Referer": referer if random.random() > 0.2 else "",  # 20%概率不带referer
-        "Cache-Control": random.choice(["max-age=0", "no-cache", "max-age=300"]),
-        "Pragma": "no-cache" if random.random() > 0.5 else ""
-    }
-    
-    # 随机添加可选头部（模拟不同浏览器行为）
-    if random.random() > 0.6:
-        headers["Accept-Encoding"] = "gzip, deflate, br"
-    if random.random() > 0.7:
-        headers["Upgrade-Insecure-Requests"] = "1"
-    if random.random() > 0.8:
-        headers["Sec-Fetch-Dest"] = "document"
-        headers["Sec-Fetch-Mode"] = "navigate"
-        headers["Sec-Fetch-Site"] = random.choice(["same-origin", "cross-site", "none"])
-    if random.random() > 0.9:
-        headers["DNT"] = "1"  # 不跟踪请求（部分用户会开启）
-    
-    return headers
+RAW_HEADERS = {  # 仅用于获取原始数据，防止接收到Accept-Language等头部导致乱码
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/123.0.0.0 Safari/537.36 "
+        "(check-flink/1.0; +https://github.com/willow-god/check-flink)"
+    ),
+    "X-Check-Flink": "1.0"
+}
 
-# 可选：代理池（如果需要真实多IP，可启用；否则返回空）
-def load_proxies(use_proxy=False):
-    """加载代理IP池（可选），不使用代理时返回空列表"""
-    if not use_proxy:
-        return []
-        
-    proxies = []
-    if os.path.exists('proxies.txt'):
-        with open('proxies.txt', 'r') as f:
-            for line in f:
-                ip = line.strip()
-                if not ip:
-                    continue
-                # 为IP添加协议（根据IP类型自动处理）
-                if ':' in ip:  # IPv6
-                    proxies.append({
-                        'http': f'http://[{ip}]',
-                        'https': f'https://[{ip}]'
-                    })
-                else:  # IPv4
-                    proxies.append({
-                        'http': f'http://{ip}',
-                        'https': f'https://{ip}'
-                    })
-    return proxies
-
-# 配置参数（默认不使用代理，模拟单IP但多行为特征）
-USE_PROXY = os.getenv("USE_PROXY", "False").lower() == "true"  # 可通过环境变量控制
-PROXY_POOL = load_proxies(USE_PROXY)
-if PROXY_POOL:
-    logging.info(f"已加载代理池，共 {len(PROXY_POOL)} 个代理（多IP模式）")
-else:
-    logging.info("未使用代理，模拟单IP的多行为特征（更贴近真实用户）")
-
-SOURCE_URL = os.getenv("SOURCE_URL", "./link.csv")
+PROXY_URL_TEMPLATE = f"{os.getenv('PROXY_URL')}{{}}" if os.getenv("PROXY_URL") else None
+SOURCE_URL = os.getenv("SOURCE_URL", "./link.csv")  # 默认本地文件
 RESULT_FILE = "./result.json"
 api_request_queue = Queue()
 
-# 模拟真实用户的访问间隔（更自然的分布）
-def human_delay():
-    """生成符合人类行为的随机延迟（避免机械规律）"""
-    # 短延迟（浏览同一页面内内容）
-    if random.random() > 0.3:
-        return random.uniform(0.8, 3.5)
-    # 长延迟（浏览后思考或切换页面）
-    else:
-        return random.uniform(4.0, 10.0)
+if PROXY_URL_TEMPLATE:
+    logging.info("代理 URL 获取成功，代理协议: %s", PROXY_URL_TEMPLATE.split(":")[0])
 
-def get_random_proxy():
-    """随机获取代理（仅在启用时生效）"""
-    if PROXY_POOL and random.random() > 0.1:  # 10%概率不使用代理（模拟真实用户偶尔直连）
-        return random.choice(PROXY_POOL)
-    return None
+else:
+    logging.info("未提供代理 URL")
 
-def request_url(session, url, desc="", **kwargs):
-    """模拟真实用户的请求行为（核心函数）"""
+def request_url(session, url, headers=HEADERS, desc="", timeout=15, verify=True, **kwargs):
+    """统一封装的 GET 请求函数"""
     try:
-        # 人类浏览延迟
-        delay = human_delay()
-        time.sleep(delay)
-        
-        # 动态生成请求头
-        headers = get_browser_headers(url)
-        
-        # 随机超时（模拟网络波动）
-        timeout = random.uniform(8, 15)
-        
-        # 随机代理（可选）
-        proxies = get_random_proxy()
-        
         start_time = time.time()
-        logging.info(
-            f"[{desc}] 准备访问: {url} "
-            f"(延迟: {delay:.2f}s, "
-            f"代理: {proxies.get('https') if proxies else '当前IP'})"
-        )
-        
-        # 模拟真实浏览器的请求过程
-        response = session.get(
-            url,
-            headers=headers,
-            timeout=timeout,
-            proxies=proxies,
-            allow_redirects=True,
-            stream=True
-        )
-        
-        # 模拟浏览器逐步接收数据（大文件额外延迟）
-        content_length = response.headers.get('Content-Length')
-        if content_length and int(content_length) > 1024*1024*5:  # 大于5MB的内容
-            time.sleep(random.uniform(1.5, 3.5))
-        
-        # 读取内容（模拟浏览器渲染）
-        response.content
-        
+        response = session.get(url, headers=headers, timeout=timeout, verify=verify, **kwargs)
         latency = round(time.time() - start_time, 2)
-        logging.info(
-            f"[{desc}] 访问完成: {url} "
-            f"状态码: {response.status_code}, "
-            f"延迟: {latency}s, "
-            f"大小: {len(response.content)//1024}KB"
-        )
         return response, latency
-    
     except requests.RequestException as e:
-        logging.warning(f"[{desc}] 请求失败: {url}，错误: {str(e)[:100]}")
+        logging.warning(f"[{desc}] 请求失败: {url}，错误如下: \n================================================================\n{e}\n================================================================")
         return None, -1
 
-# 以下函数（load_previous_results、save_results等）保持不变
 def load_previous_results():
     if os.path.exists(RESULT_FILE):
         try:
@@ -191,7 +78,6 @@ def load_previous_results():
 def save_results(data):
     with open(RESULT_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
-    logging.info(f"结果已保存至: {RESULT_FILE}")
 
 def is_url(path):
     return urlparse(path).scheme in ("http", "https")
@@ -201,7 +87,7 @@ def fetch_origin_data(origin_path):
     try:
         if is_url(origin_path):
             with requests.Session() as session:
-                response, _ = request_url(session, origin_path, desc="数据源获取")
+                response, _ = request_url(session, origin_path, headers=RAW_HEADERS, desc="数据源")
                 content = response.text if response else ""
         else:
             with open(origin_path, "r", encoding="utf-8") as f:
@@ -231,31 +117,19 @@ def fetch_origin_data(origin_path):
 
 def check_link(item, session):
     link = item['link']
-    if not is_url(link):
-        logging.warning(f"无效链接格式: {link}")
-        return item, -1
-
-    # 模拟用户可能的访问方式（直接访问为主）
-    access_methods = [("直接访问", link)]
-    
-    # 依次尝试访问
-    for method, url in access_methods:
+    for method, url in [("直接访问", link), ("代理访问", PROXY_URL_TEMPLATE.format(link) if PROXY_URL_TEMPLATE else None)]:
+        if not url or not is_url(url):
+            logging.warning(f"[{method}] 无效链接: {link}")
+            continue
         response, latency = request_url(session, url, desc=method)
-        
-        if response:
-            # 处理常见状态码
-            if response.status_code in [200, 301, 302, 307, 308]:
-                logging.info(f"[{method}] 成功访问: {link} (最终URL: {response.url})")
-                return item, latency
-            # 处理需要重试的情况（模拟用户刷新）
-            elif response.status_code in [429, 503, 504]:
-                logging.warning(f"[{method}] 需要重试: {link}，状态码: {response.status_code}")
-                time.sleep(random.uniform(3, 7))  # 更长的重试间隔
-                response, latency = request_url(session, url, desc=f"{method}(重试)")
-                if response and response.status_code in [200, 301, 302]:
-                    return item, latency
-    
-    # 加入API检查队列
+        if response and response.status_code == 200:
+            logging.info(f"[{method}] 成功访问: {link} ，延迟 {latency} 秒")
+            return item, latency
+        elif response and response.status_code != 200:
+            logging.warning(f"[{method}] 状态码异常: {link} -> {response.status_code}")
+        else:
+            logging.warning(f"[{method}] 请求失败，Response 无效: {link}")
+
     api_request_queue.put(item)
     return item, -1
 
@@ -287,41 +161,23 @@ def handle_api_requests():
 
 def main():
     try:
-        # 模拟浏览器启动时间（更真实）
-        start_delay = random.uniform(1.5, 3.0)
-        logging.info(f"模拟浏览器启动，延迟 {start_delay:.2f}s")
-        time.sleep(start_delay)
-        
         link_list = fetch_origin_data(SOURCE_URL)
         if not link_list:
             logging.error("数据源为空或解析失败")
             return
 
         previous_results = load_previous_results()
-        logging.info(f"加载历史结果: {len(previous_results.get('link_status', []))} 条记录")
 
-        # 限制并发（模拟真实用户不会同时打开太多页面）
-        max_workers = random.randint(2, 4)  # 随机2-4个并发
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            def process_with_session(item):
-                with requests.Session() as session:
-                    # 模拟浏览器Cookie（更真实的会话）
-                    session.cookies.update({
-                        "session_id": f"user_{random.randint(10000, 99999)}",
-                        "visited": str(datetime.now().timestamp()),
-                        "preferences": json.dumps({"theme": "light", "lang": "zh-CN"})
-                    })
-                    return check_link(item, session)
-            
-            results = list(executor.map(process_with_session, link_list))
+        with requests.Session() as session:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                results = list(executor.map(lambda item: check_link(item, session), link_list))
 
-        # 处理API检查结果
-        api_results = handle_api_requests()
-        api_link_map = {item['link']: latency for item, latency in api_results}
-        for i in range(len(results)):
-            item, latency = results[i]
-            if latency == -1 and item['link'] in api_link_map:
-                results[i] = (item, api_link_map[item['link']])
+            updated_api_results = handle_api_requests(session)
+            for updated_item in updated_api_results:
+                for idx, (item, latency) in enumerate(results):
+                    if item['link'] == updated_item['link']:
+                        results[idx] = (item, updated_item['latency'])
+                        break
 
         current_links = {item['link'] for item in link_list}
         link_status = []
@@ -331,6 +187,7 @@ def main():
                 name = item.get('name', '未知')
                 link = item.get('link')
                 if not link:
+                    logging.warning(f"跳过无效项: {item}")
                     continue
 
                 prev_entry = next((x for x in previous_results.get("link_status", []) if x.get("link") == link), {})
@@ -360,12 +217,9 @@ def main():
 
         save_results(output)
         logging.info(f"共检查 {total} 个链接，成功 {accessible} 个，失败 {total - accessible} 个")
-        
+        logging.info(f"结果已保存至: {RESULT_FILE}")
     except Exception as e:
         logging.exception(f"运行主程序失败: {e}")
-        if 'output' in locals():
-            save_results(output)
 
 if __name__ == "__main__":
     main()
-    
