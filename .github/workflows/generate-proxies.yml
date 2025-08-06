@@ -21,7 +21,7 @@ jobs:
       - name: 运行代理生成脚本
         run: |
           # 运行生成代理的脚本（假设你的脚本名为generate_proxies.py）
-          python generate_proxies.py
+          python proxies.py
           
           # 检查是否生成了proxies.txt
           if [ -f "proxies.txt" ]; then
