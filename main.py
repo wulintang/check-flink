@@ -2,13 +2,12 @@ import os
 import csv
 import json
 import time
-import random
 import logging
 import requests
 import warnings
 from queue import Queue
 from datetime import datetime
-from urllib.parse import urlparse, quote
+from urllib.parse import urlparse
 import concurrent.futures
 
 # 设置日志
@@ -45,20 +44,14 @@ RAW_HEADERS = {  # 仅用于获取原始数据，防止接收到Accept-Language�
     "X-Check-Flink": "1.0"
 }
 
-# 检查代理URL模板格式
-PROXY_URL_TEMPLATE = os.getenv('PROXY_URL') if os.getenv("PROXY_URL") else None
-if PROXY_URL_TEMPLATE and "{}" not in PROXY_URL_TEMPLATE:
-    logging.warning("代理 URL 模板缺少占位符 '{}'，将忽略代理")
-    PROXY_URL_TEMPLATE = None
-elif PROXY_URL_TEMPLATE:
-    PROXY_URL_TEMPLATE = f"{PROXY_URL_TEMPLATE}{{}}"
-
+PROXY_URL_TEMPLATE = f"{os.getenv('PROXY_URL')}{{}}" if os.getenv("PROXY_URL") else None
 SOURCE_URL = os.getenv("SOURCE_URL", "./link.csv")  # 默认本地文件
 RESULT_FILE = "./result.json"
 api_request_queue = Queue()
 
 if PROXY_URL_TEMPLATE:
     logging.info("代理 URL 获取成功，代理协议: %s", PROXY_URL_TEMPLATE.split(":")[0])
+
 else:
     logging.info("未提供代理 URL")
 
@@ -66,7 +59,7 @@ def request_url(session, url, headers=HEADERS, desc="", timeout=15, verify=True,
     """统一封装的 GET 请求函数"""
     try:
         start_time = time.time()
-        response = session.get(url, headers=headers, timeout=timeout, verify=verify,** kwargs)
+        response = session.get(url, headers=headers, timeout=timeout, verify=verify, **kwargs)
         latency = round(time.time() - start_time, 2)
         return response, latency
     except requests.RequestException as e:
@@ -140,35 +133,29 @@ def check_link(item, session):
     api_request_queue.put(item)
     return item, -1
 
-def human_delay():
-    """生成随机延迟（1-3秒）模拟人类操作间隔"""
-    return random.uniform(1, 3)
-
-def handle_api_requests():
+def handle_api_requests(session):
     results = []
-    with requests.Session() as session:
-        logging.info(f"开始处理API检查队列，队列大小: {api_request_queue.qsize()}")
-        while not api_request_queue.empty():
-            time.sleep(human_delay())  # 人类操作间隔
-            item = api_request_queue.get()
-            link = item['link']
-            # 对URL进行编码处理
-            api_url = f"https://v2.xxapi.cn/api/status?url={quote(link)}"
-            
-            response, latency = request_url(session, api_url, desc="API检查")
-            if response:
-                # 只根据HTTP状态码判断，忽略响应内容
-                if response.status_code == 200:
-                    logging.info(f"[API] 确认可访问: {link} (HTTP状态码: 200)")
-                    results.append((item, latency))
+    while not api_request_queue.empty():
+        time.sleep(0.2)
+        item = api_request_queue.get()
+        link = item['link']
+        api_url = f"https://v2.xxapi.cn/api/status?url={link}"
+        response, latency = request_url(session, api_url,headers=RAW_HEADERS, desc="API 检查", timeout=30)
+        if response:
+            try:
+                res_json = response.json()
+                if int(res_json.get("code")) == 200 and int(res_json.get("data")) == 200:
+                    logging.info(f"[API] 成功访问: {link} ，状态码 200")
+                    item['latency'] = latency
                 else:
-                    logging.warning(f"[API] 不可访问: {link} (HTTP状态码: {response.status_code})")
-                    results.append((item, -1))
-            else:
-                logging.warning(f"[API] 请求失败: {link}")
-                results.append((item, -1))
-            api_request_queue.task_done()
-    logging.info("API检查队列处理完成")
+                    logging.warning(f"[API] 状态异常: {link} -> [{res_json.get('code')}, {res_json.get('data')}]")
+                    item['latency'] = -1
+            except Exception as e:
+                logging.error(f"[API] 解析响应失败: {link}，错误: {e}")
+                item['latency'] = -1
+        else:
+            item['latency'] = -1
+        results.append(item)
     return results
 
 def main():
@@ -184,15 +171,11 @@ def main():
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                 results = list(executor.map(lambda item: check_link(item, session), link_list))
 
-            # 修复：调用handle_api_requests时不传递session参数
-            updated_api_results = handle_api_requests()
-            # 修复：正确处理元组类型的updated_api_results
+            updated_api_results = handle_api_requests(session)
             for updated_item in updated_api_results:
-                updated_link = updated_item[0]['link']
-                updated_latency = updated_item[1]
                 for idx, (item, latency) in enumerate(results):
-                    if item['link'] == updated_link:
-                        results[idx] = (item, updated_latency)
+                    if item['link'] == updated_item['link']:
+                        results[idx] = (item, updated_item['latency'])
                         break
 
         current_links = {item['link'] for item in link_list}
