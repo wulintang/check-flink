@@ -48,10 +48,11 @@ PROXY_URL_TEMPLATE = f"{os.getenv('PROXY_URL')}{{}}" if os.getenv("PROXY_URL") e
 SOURCE_URL = os.getenv("SOURCE_URL", "./link.csv")  # 默认本地文件
 RESULT_FILE = "./result.json"
 api_request_queue = Queue()
+# 新增第二个API的队列
+api2_request_queue = Queue()
 
 if PROXY_URL_TEMPLATE:
     logging.info("代理 URL 获取成功，代理协议: %s", PROXY_URL_TEMPLATE.split(":")[0])
-
 else:
     logging.info("未提供代理 URL")
 
@@ -59,7 +60,7 @@ def request_url(session, url, headers=HEADERS, desc="", timeout=15, verify=True,
     """统一封装的 GET 请求函数"""
     try:
         start_time = time.time()
-        response = session.get(url, headers=headers, timeout=timeout, verify=verify, **kwargs)
+        response = session.get(url, headers=headers, timeout=timeout, verify=verify,** kwargs)
         latency = round(time.time() - start_time, 2)
         return response, latency
     except requests.RequestException as e:
@@ -130,39 +131,67 @@ def check_link(item, session):
         else:
             logging.warning(f"[{method}] 请求失败，Response 无效: {link}")
 
+    # 先放入第一个API队列
     api_request_queue.put(item)
     return item, -1
 
-def handle_api_requests(session):
+def handle_api1_requests(session):
+    """第一个API检查处理函数"""
     results = []
     while not api_request_queue.empty():
         time.sleep(0.2)
         item = api_request_queue.get()
         link = item['link']
         api_url = f"https://v.api.aa1.cn/api/httpcode/?url={link}"
-        response, latency = request_url(session, api_url, headers=RAW_HEADERS, desc="API 检查", timeout=30)
+        response, latency = request_url(session, api_url, headers=RAW_HEADERS, desc="API1 检查", timeout=30)
         
         if response:
             try:
                 res_json = response.json()
-                # 根据实际返回结构修改判断条件
-                # API返回的状态码在httpcode字段中，如301
+                # 第一个API的判断条件
                 if int(res_json.get("code")) == 200:  # API自身调用成功
                     http_code = res_json.get("httpcode")
                     item['http_code'] = http_code  # 保存实际的HTTP状态码
                     item['latency'] = latency
-                    logging.info(f"[API] 访问 {link} ，状态码 {http_code}")
+                    logging.info(f"[API1] 访问 {link} ，状态码 {http_code}")
+                    results.append(item)
+                    continue  # 如果成功，不需要进入第二个API
                 else:
-                    logging.warning(f"[API] 调用失败: {link} -> 错误码 {res_json.get('code')}")
+                    logging.warning(f"[API1] 调用失败: {link} -> 错误码 {res_json.get('code')}")
+            except Exception as e:
+                logging.error(f"[API1] 解析响应失败: {link}，错误: {e}")
+        else:
+            logging.warning(f"[API1] 请求失败: {link}")
+            
+        # 如果第一个API失败，放入第二个API队列
+        api2_request_queue.put(item)
+    
+    return results
+
+def handle_api2_requests(session):
+    """第二个API检查处理函数"""
+    results = []
+    while not api2_request_queue.empty():
+        time.sleep(0.2)
+        item = api2_request_queue.get()
+        link = item['link']
+        api_url = f"https://v2.xxapi.cn/api/status?url={link}"
+        response, latency = request_url(session, api_url, headers=RAW_HEADERS, desc="API2 检查", timeout=30)
+        if response:
+            try:
+                res_json = response.json()
+                if int(res_json.get("code")) == 200 and int(res_json.get("data")) == 200:
+                    logging.info(f"[API2] 成功访问: {link} ，状态码 200")
+                    item['latency'] = latency
+                else:
+                    logging.warning(f"[API2] 状态异常: {link} -> [{res_json.get('code')}, {res_json.get('data')}]")
                     item['latency'] = -1
             except Exception as e:
-                logging.error(f"[API] 解析响应失败: {link}，错误: {e}")
+                logging.error(f"[API2] 解析响应失败: {link}，错误: {e}")
                 item['latency'] = -1
         else:
             item['latency'] = -1
-            
         results.append(item)
-    
     return results
 
 def main():
@@ -178,8 +207,16 @@ def main():
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                 results = list(executor.map(lambda item: check_link(item, session), link_list))
 
-            updated_api_results = handle_api_requests(session)
-            for updated_item in updated_api_results:
+            # 先处理第一个API
+            api1_results = handle_api1_requests(session)
+            # 再处理第二个API
+            api2_results = handle_api2_requests(session)
+            
+            # 合并API结果
+            all_api_results = api1_results + api2_results
+            
+            # 更新结果
+            for updated_item in all_api_results:
                 for idx, (item, latency) in enumerate(results):
                     if item['link'] == updated_item['link']:
                         results[idx] = (item, updated_item['latency'])
@@ -229,3 +266,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
