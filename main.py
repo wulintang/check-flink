@@ -2,6 +2,8 @@ import os
 import csv
 import json
 import time
+import socket
+import ssl
 import logging
 import requests
 import warnings
@@ -48,13 +50,36 @@ PROXY_URL_TEMPLATE = f"{os.getenv('PROXY_URL')}{{}}" if os.getenv("PROXY_URL") e
 SOURCE_URL = os.getenv("SOURCE_URL", "./link.csv")  # 默认本地文件
 RESULT_FILE = "./result.json"
 api_request_queue = Queue()
-# 新增第二个API的队列
 api2_request_queue = Queue()
 
 if PROXY_URL_TEMPLATE:
     logging.info("代理 URL 获取成功，代理协议: %s", PROXY_URL_TEMPLATE.split(":")[0])
 else:
     logging.info("未提供代理 URL")
+
+def check_ssl_for_accessibility(url):
+    """SSL检测：仅判断是否因SSL问题导致不可访问，返回True（SSL正常）/False（SSL异常）"""
+    parsed_url = urlparse(url)
+    if parsed_url.scheme != "https":
+        # HTTP链接无需SSL检测，直接返回正常
+        return True
+    
+    hostname = parsed_url.hostname
+    if not hostname:
+        return False  # 主机名解析失败，视为不可访问
+    
+    try:
+        # 尝试建立SSL连接（仅验证SSL有效性，不获取完整内容）
+        context = ssl.create_default_context()
+        with socket.create_connection((hostname, 443), timeout=10) as sock:
+            with context.wrap_socket(sock, server_hostname=hostname) as secure_sock:
+                # 检查证书是否过期
+                cert = secure_sock.getpeercert()
+                expiry_date = datetime.strptime(cert['notAfter'], '%b %d %H:%M:%S %Y %Z')
+                return expiry_date > datetime.now()  # 证书未过期则正常
+    except:
+        # 任何SSL相关错误（证书无效、过期、不匹配等）均视为不可访问
+        return False
 
 def request_url(session, url, headers=HEADERS, desc="", timeout=15, verify=True, **kwargs):
     """统一封装的 GET 请求函数"""
@@ -118,6 +143,13 @@ def fetch_origin_data(origin_path):
 
 def check_link(item, session):
     link = item['link']
+    
+    # 第一步：SSL检测（仅HTTPS链接），若SSL异常直接判定为失败
+    if not check_ssl_for_accessibility(link):
+        logging.warning(f"[SSL检测] SSL配置错误或证书无效，链接不可访问: {link}")
+        return item, -1  # 直接返回失败
+    
+    # 后续检测流程（保持原始逻辑：直接访问、代理访问、API检查）
     for method, url in [("直接访问", link), ("代理访问", PROXY_URL_TEMPLATE.format(link) if PROXY_URL_TEMPLATE else None)]:
         if not url or not is_url(url):
             logging.warning(f"[{method}] 无效链接: {link}")
@@ -131,7 +163,6 @@ def check_link(item, session):
         else:
             logging.warning(f"[{method}] 请求失败，Response 无效: {link}")
 
-    # 先放入第一个API队列
     api_request_queue.put(item)
     return item, -1
 
@@ -148,14 +179,13 @@ def handle_api1_requests(session):
         if response:
             try:
                 res_json = response.json()
-                # 第一个API的判断条件
-                if int(res_json.get("code")) == 200:  # API自身调用成功
+                if int(res_json.get("code")) == 200:
                     http_code = res_json.get("httpcode")
-                    item['http_code'] = http_code  # 保存实际的HTTP状态码
+                    item['http_code'] = http_code
                     item['latency'] = latency
                     logging.info(f"[API1] 访问 {link} ，状态码 {http_code}")
                     results.append(item)
-                    continue  # 如果成功，不需要进入第二个API
+                    continue
                 else:
                     logging.warning(f"[API1] 调用失败: {link} -> 错误码 {res_json.get('code')}")
             except Exception as e:
@@ -163,7 +193,6 @@ def handle_api1_requests(session):
         else:
             logging.warning(f"[API1] 请求失败: {link}")
             
-        # 如果第一个API失败，放入第二个API队列
         api2_request_queue.put(item)
     
     return results
@@ -207,15 +236,10 @@ def main():
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                 results = list(executor.map(lambda item: check_link(item, session), link_list))
 
-            # 先处理第一个API
             api1_results = handle_api1_requests(session)
-            # 再处理第二个API
             api2_results = handle_api2_requests(session)
-            
-            # 合并API结果
             all_api_results = api1_results + api2_results
             
-            # 更新结果
             for updated_item in all_api_results:
                 for idx, (item, latency) in enumerate(results):
                     if item['link'] == updated_item['link']:
@@ -237,6 +261,7 @@ def main():
                 prev_fail_count = prev_entry.get("fail_count", 0)
                 fail_count = prev_fail_count + 1 if latency == -1 else 0
 
+                # 保持原始JSON结构，不新增字段
                 link_status.append({
                     'name': name,
                     'link': link,
@@ -260,10 +285,9 @@ def main():
 
         save_results(output)
         logging.info(f"共检查 {total} 个链接，成功 {accessible} 个，失败 {total - accessible} 个")
-        logging.info(f"结果已保存至: {RESULT_FILE}")
+        logging.info(f"结果已保存至: ./result.json")
     except Exception as e:
         logging.exception(f"运行主程序失败: {e}")
 
 if __name__ == "__main__":
     main()
-    
