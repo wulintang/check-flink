@@ -58,39 +58,54 @@ else:
     logging.info("未提供代理 URL")
 
 def check_ssl_for_accessibility(url):
-    """SSL检测：仅判断是否因SSL问题导致不可访问，返回True（SSL正常）/False（SSL异常）"""
+    """SSL检测：判断是否因SSL问题导致不可访问，返回元组(状态, 错误信息)"""
     parsed_url = urlparse(url)
     if parsed_url.scheme != "https":
         # HTTP链接无需SSL检测，直接返回正常
-        return True
+        return (True, None)
     
     hostname = parsed_url.hostname
     if not hostname:
-        return False  # 主机名解析失败，视为不可访问
+        return (False, "主机名解析失败")  # 主机名解析失败
     
     try:
-        # 尝试建立SSL连接（仅验证SSL有效性，不获取完整内容）
+        # 尝试建立SSL连接
         context = ssl.create_default_context()
         with socket.create_connection((hostname, 443), timeout=10) as sock:
             with context.wrap_socket(sock, server_hostname=hostname) as secure_sock:
                 # 检查证书是否过期
                 cert = secure_sock.getpeercert()
                 expiry_date = datetime.strptime(cert['notAfter'], '%b %d %H:%M:%S %Y %Z')
-                return expiry_date > datetime.now()  # 证书未过期则正常
-    except:
-        # 任何SSL相关错误（证书无效、过期、不匹配等）均视为不可访问
-        return False
+                if expiry_date > datetime.now():
+                    return (True, None)
+                else:
+                    return (False, "SSL证书已过期")
+    except ssl.CertificateError:
+        return (False, "SSL证书验证失败")
+    except ssl.SSLError as e:
+        return (False, f"SSL错误: {str(e)}")
+    except socket.timeout:
+        return (False, "SSL连接超时")
+    except Exception as e:
+        return (False, f"SSL相关错误: {str(e)}")
 
 def request_url(session, url, headers=HEADERS, desc="", timeout=15, verify=True, **kwargs):
-    """统一封装的 GET 请求函数"""
+    """统一封装的 GET 请求函数，返回(响应, 延迟, 错误信息)"""
     try:
         start_time = time.time()
         response = session.get(url, headers=headers, timeout=timeout, verify=verify,** kwargs)
         latency = round(time.time() - start_time, 2)
-        return response, latency
+        return (response, latency, None)
+    except requests.Timeout:
+        return (None, -1, "请求超时")
+    except requests.ConnectionError:
+        return (None, -1, "连接错误")
+    except requests.TooManyRedirects:
+        return (None, -1, "重定向次数过多")
     except requests.RequestException as e:
-        logging.warning(f"[{desc}] 请求失败: {url}，错误如下: \n================================================================\n{e}\n================================================================")
-        return None, -1
+        error_msg = f"请求异常: {str(e)}"
+        logging.warning(f"[{desc}] 请求失败: {url}，错误: {error_msg}")
+        return (None, -1, error_msg)
 
 def load_previous_results():
     if os.path.exists(RESULT_FILE):
@@ -113,13 +128,16 @@ def fetch_origin_data(origin_path):
     try:
         if is_url(origin_path):
             with requests.Session() as session:
-                response, _ = request_url(session, origin_path, headers=RAW_HEADERS, desc="数据源")
+                response, _, error = request_url(session, origin_path, headers=RAW_HEADERS, desc="数据源")
+                if error:
+                    logging.error(f"获取远程数据源失败: {error}")
+                    return []
                 content = response.text if response else ""
         else:
             with open(origin_path, "r", encoding="utf-8") as f:
                 content = f.read()
     except Exception as e:
-        logging.error(f"读取数据失败: {e}")
+        logging.error(f"读取数据失败: {str(e)}")
         return []
 
     try:
@@ -138,44 +156,66 @@ def fetch_origin_data(origin_path):
         logging.info("成功解析 CSV 格式数据")
         return [{'name': row[0], 'link': row[1]} for row in rows if len(row) == 2]
     except Exception as e:
-        logging.error(f"CSV 解析失败: {e}")
+        logging.error(f"CSV 解析失败: {str(e)}")
         return []
 
 def check_link(item, session):
     link = item['link']
+    error_messages = []  # 收集所有错误信息
     
-    # 第一步：SSL检测（仅HTTPS链接），若SSL异常直接判定为失败
-    if not check_ssl_for_accessibility(link):
-        logging.warning(f"[SSL检测] SSL配置错误或证书无效，链接不可访问: {link}")
-        return item, -1  # 直接返回失败
+    # 第一步：SSL检测（仅HTTPS链接）
+    ssl_ok, ssl_error = check_ssl_for_accessibility(link)
+    if not ssl_ok and ssl_error:
+        error_messages.append(f"SSL检测: {ssl_error}")
+        logging.warning(f"[SSL检测] {ssl_error}，链接不可访问: {link}")
+        return (item, -1, "; ".join(error_messages))
     
-    # 后续检测流程（保持原始逻辑：直接访问、代理访问、API检查）
-    for method, url in [("直接访问", link), ("代理访问", PROXY_URL_TEMPLATE.format(link) if PROXY_URL_TEMPLATE else None)]:
+    # 后续检测流程
+    methods = [("直接访问", link)]
+    if PROXY_URL_TEMPLATE:
+        methods.append(("代理访问", PROXY_URL_TEMPLATE.format(link)))
+    
+    for method, url in methods:
         if not url or not is_url(url):
-            logging.warning(f"[{method}] 无效链接: {link}")
+            error = f"{method}: 无效链接"
+            error_messages.append(error)
+            logging.warning(f"{error}: {link}")
             continue
-        response, latency = request_url(session, url, desc=method)
-        if response and response.status_code == 200:
-            logging.info(f"[{method}] 成功访问: {link} ，延迟 {latency} 秒")
-            return item, latency
-        elif response and response.status_code != 200:
-            logging.warning(f"[{method}] 状态码异常: {link} -> {response.status_code}")
+            
+        response, latency, error = request_url(session, url, desc=method)
+        if error:
+            error_messages.append(f"{method}: {error}")
+        elif response:
+            if response.status_code == 200:
+                logging.info(f"[{method}] 成功访问: {link} ，延迟 {latency} 秒")
+                return (item, latency, None)
+            else:
+                error = f"{method}: 状态码异常 ({response.status_code})"
+                error_messages.append(error)
+                logging.warning(f"{error}: {link}")
         else:
-            logging.warning(f"[{method}] 请求失败，Response 无效: {link}")
+            error = f"{method}: 未知错误"
+            error_messages.append(error)
 
-    api_request_queue.put(item)
-    return item, -1
+    # 如果所有方法都失败，加入API检查队列
+    api_request_queue.put((item, error_messages))
+    return (item, -1, "; ".join(error_messages))
 
 def handle_api1_requests(session):
     """第一个API检查处理函数"""
     results = []
     while not api_request_queue.empty():
         time.sleep(0.2)
-        item = api_request_queue.get()
+        item, prev_errors = api_request_queue.get()
         link = item['link']
         api_url = f"https://v.api.aa1.cn/api/httpcode/?url={link}"
-        response, latency = request_url(session, api_url, headers=RAW_HEADERS, desc="API1 检查", timeout=30)
+        response, latency, error = request_url(session, api_url, headers=RAW_HEADERS, desc="API1 检查", timeout=30)
         
+        if error:
+            prev_errors.append(f"API1检查: {error}")
+            api2_request_queue.put((item, prev_errors))
+            continue
+            
         if response:
             try:
                 res_json = response.json()
@@ -183,17 +223,22 @@ def handle_api1_requests(session):
                     http_code = res_json.get("httpcode")
                     item['http_code'] = http_code
                     item['latency'] = latency
-                    logging.info(f"[API1] 访问 {link} ，状态码 {http_code}")
-                    results.append(item)
-                    continue
+                    if int(http_code) == 200:
+                        logging.info(f"[API1] 访问 {link} ，状态码 {http_code}")
+                        results.append((item, latency, None))
+                        continue
+                    else:
+                        error = f"API1检查: 状态码异常 ({http_code})"
+                        prev_errors.append(error)
                 else:
-                    logging.warning(f"[API1] 调用失败: {link} -> 错误码 {res_json.get('code')}")
+                    error = f"API1检查: 调用失败 (错误码 {res_json.get('code')})"
+                    prev_errors.append(error)
             except Exception as e:
-                logging.error(f"[API1] 解析响应失败: {link}，错误: {e}")
-        else:
-            logging.warning(f"[API1] 请求失败: {link}")
-            
-        api2_request_queue.put(item)
+                error = f"API1检查: 解析响应失败 ({str(e)})"
+                prev_errors.append(error)
+                logging.error(error)
+        
+        api2_request_queue.put((item, prev_errors))
     
     return results
 
@@ -202,25 +247,28 @@ def handle_api2_requests(session):
     results = []
     while not api2_request_queue.empty():
         time.sleep(0.2)
-        item = api2_request_queue.get()
+        item, prev_errors = api2_request_queue.get()
         link = item['link']
         api_url = f"https://v2.xxapi.cn/api/status?url={link}"
-        response, latency = request_url(session, api_url, headers=RAW_HEADERS, desc="API2 检查", timeout=30)
-        if response:
+        response, latency, error = request_url(session, api_url, headers=RAW_HEADERS, desc="API2 检查", timeout=30)
+        
+        if error:
+            prev_errors.append(f"API2检查: {error}")
+        elif response:
             try:
                 res_json = response.json()
                 if int(res_json.get("code")) == 200 and int(res_json.get("data")) == 200:
                     logging.info(f"[API2] 成功访问: {link} ，状态码 200")
-                    item['latency'] = latency
+                    results.append((item, latency, None))
+                    continue
                 else:
-                    logging.warning(f"[API2] 状态异常: {link} -> [{res_json.get('code')}, {res_json.get('data')}]")
-                    item['latency'] = -1
+                    error = f"API2检查: 状态异常 ({res_json.get('code')}, {res_json.get('data')})"
+                    prev_errors.append(error)
             except Exception as e:
-                logging.error(f"[API2] 解析响应失败: {link}，错误: {e}")
-                item['latency'] = -1
-        else:
-            item['latency'] = -1
-        results.append(item)
+                error = f"API2检查: 解析响应失败 ({str(e)})"
+                prev_errors.append(error)
+        
+        results.append((item, -1, "; ".join(prev_errors)))
     return results
 
 def main():
@@ -238,18 +286,18 @@ def main():
 
             api1_results = handle_api1_requests(session)
             api2_results = handle_api2_requests(session)
-            all_api_results = api1_results + api2_results
             
-            for updated_item in all_api_results:
-                for idx, (item, latency) in enumerate(results):
+            # 更新结果列表
+            for updated_item, latency, error in api1_results + api2_results:
+                for idx, (item, _, _) in enumerate(results):
                     if item['link'] == updated_item['link']:
-                        results[idx] = (item, updated_item['latency'])
+                        results[idx] = (item, latency, error)
                         break
 
         current_links = {item['link'] for item in link_list}
         link_status = []
 
-        for item, latency in results:
+        for item, latency, error in results:
             try:
                 name = item.get('name', '未知')
                 link = item.get('link')
@@ -257,20 +305,25 @@ def main():
                     logging.warning(f"跳过无效项: {item}")
                     continue
 
-                prev_entry = next((x for x in previous_results.get("link_status", []) if x.get("link") == link), {})
+                # 查找之前的记录
+                prev_entry = next(
+                    (x for x in previous_results.get("link_status", []) if x.get("link") == link), 
+                    {}
+                )
                 prev_fail_count = prev_entry.get("fail_count", 0)
                 fail_count = prev_fail_count + 1 if latency == -1 else 0
 
-                # 保持原始JSON结构，不新增字段
                 link_status.append({
                     'name': name,
                     'link': link,
                     'latency': latency,
-                    'fail_count': fail_count
+                    'fail_count': fail_count,
+                    'error': error  # 新增错误信息字段
                 })
             except Exception as e:
-                logging.error(f"处理链接时发生错误: {item}, 错误: {e}")
+                logging.error(f"处理链接时发生错误: {item}, 错误: {str(e)}")
 
+        # 过滤掉不在当前链接列表中的记录
         link_status = [entry for entry in link_status if entry["link"] in current_links]
 
         accessible = sum(1 for x in link_status if x["latency"] != -1)
@@ -285,9 +338,9 @@ def main():
 
         save_results(output)
         logging.info(f"共检查 {total} 个链接，成功 {accessible} 个，失败 {total - accessible} 个")
-        logging.info(f"结果已保存至: ./result.json")
+        logging.info(f"结果已保存至: {RESULT_FILE}")
     except Exception as e:
-        logging.exception(f"运行主程序失败: {e}")
+        logging.exception(f"运行主程序失败: {str(e)}")
 
 if __name__ == "__main__":
     main()
