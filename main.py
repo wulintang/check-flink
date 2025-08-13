@@ -65,6 +65,7 @@ else:
     logging.info("未提供代理 URL")
 
 def is_in_whitelist(link):
+    """判断链接是否在白名单中（支持完整URL或域名匹配）"""
     parsed = urlparse(link)
     domain = parsed.hostname or link
     return (link in WHITELIST) or (domain in WHITELIST)
@@ -97,6 +98,7 @@ def check_ssl_for_accessibility(url):
         return (False, f"SSL连接失败: {str(e)}")
 
 def request_url(session, url, headers=HEADERS, desc="", timeout=15, verify=True):
+    """统一请求函数，返回（响应对象，延迟，状态码）"""
     try:
         start_time = time.time()
         response = session.get(url, headers=headers, timeout=timeout, verify=verify)
@@ -104,7 +106,11 @@ def request_url(session, url, headers=HEADERS, desc="", timeout=15, verify=True)
         return response, latency, response.status_code
     except requests.RequestException as e:
         logging.warning(f"[{desc}] 请求失败: {url}，错误: {e}")
-        return None, -1, -1
+        return None, -1, -1  # 状态码-1表示请求异常
+
+def is_success_status_code(status_code):
+    """判断状态码是否属于“可访问”（200/301/302）"""
+    return status_code in (200, 301, 302)
 
 def load_previous_results():
     if os.path.exists(RESULT_FILE):
@@ -160,34 +166,33 @@ def check_direct_and_proxy(item, session):
     item['check_layer'] = "未通过任何检测"
     item['raw_status_code'] = -1
     
-    # 执行SSL检测（核心逻辑：SSL失败直接判定为不可访问）
+    # SSL检测（失败直接不可访问）
     item['ssl_ok'], item['ssl_message'] = check_ssl_for_accessibility(link)
     if not item['ssl_ok']:
-        logging.warning(f"[SSL检测] {link} 异常: {item['ssl_message']} → 直接判定为不可访问")
-        # SSL失败不进入后续检测，直接返回失败
+        logging.warning(f"[SSL检测] {link} 异常: {item['ssl_message']} → 不可访问")
         return item, -1
     else:
-        logging.info(f"[SSL检测] {link} {item['ssl_message']} → 继续后续检测")
+        logging.info(f"[SSL检测] {link} {item['ssl_message']} → 继续检测")
 
-    # 第一层：直接访问（仅200成功）
+    # 第一层：直接访问（200/301/302均视为成功）
     response, latency, status_code = request_url(session, link, desc="直接访问")
-    if status_code == 200:
-        logging.info(f"[直接访问] {link} 成功（200），延迟 {latency}s")
+    if is_success_status_code(status_code):
+        logging.info(f"[直接访问] {link} 成功（状态码: {status_code}），延迟 {latency}s")
         item['check_layer'] = "直接访问"
-        item['raw_status_code'] = 200
+        item['raw_status_code'] = status_code
         return item, latency
 
-    # 第一层失败，进入第二层：代理访问
+    # 第一层失败（非200/301/302），进入第二层：代理访问
     item['raw_status_code'] = status_code
     logging.warning(f"[直接访问] {link} 失败（状态码: {status_code}），尝试代理访问")
     
     if PROXY_URL_TEMPLATE:
         proxy_url = PROXY_URL_TEMPLATE.format(link)
         response, latency, status_code = request_url(session, proxy_url, desc="代理访问")
-        if status_code == 200:
-            logging.info(f"[代理访问] {link} 成功（200），延迟 {latency}s")
+        if is_success_status_code(status_code):
+            logging.info(f"[代理访问] {link} 成功（状态码: {status_code}），延迟 {latency}s")
             item['check_layer'] = "代理访问"
-            item['raw_status_code'] = 200
+            item['raw_status_code'] = status_code
             return item, latency
         
         item['raw_status_code'] = status_code
@@ -208,22 +213,24 @@ def handle_api1():
                 session, api_url, headers=RAW_HEADERS, desc="API1检测", timeout=30
             )
 
-            if status_code == 200:
+            if status_code == 200:  # API1自身请求成功
                 try:
                     res_json = response.json()
-                    if int(res_json.get("httpcode")) == 200:
-                        logging.info(f"[API1检测] {link} 成功（目标状态码200），延迟 {latency}s")
+                    target_status = int(res_json.get("httpcode"))
+                    # 目标链接返回200/301/302均视为成功
+                    if is_success_status_code(target_status):
+                        logging.info(f"[API1检测] {link} 成功（目标状态码: {target_status}），延迟 {latency}s")
                         item['check_layer'] = "API1检测"
-                        item['raw_status_code'] = 200
+                        item['raw_status_code'] = target_status
                         results.append((item, latency))
                         continue
                     else:
-                        item['raw_status_code'] = res_json.get("httpcode")
-                        logging.warning(f"[API1检测] {link} 失败（目标状态码: {item['raw_status_code']}），进入API2检测")
+                        item['raw_status_code'] = target_status
+                        logging.warning(f"[API1检测] {link} 失败（目标状态码: {target_status}），进入API2检测")
                 except Exception as e:
                     logging.error(f"[API1解析] {link} 失败: {e}，进入API2检测")
             else:
-                logging.warning(f"[API1请求] {link} 失败（状态码: {status_code}），进入API2检测")
+                logging.warning(f"[API1请求] {link} 失败（自身状态码: {status_code}），进入API2检测")
 
             api2_queue.put(item)
             results.append((item, -1))
@@ -240,22 +247,24 @@ def handle_api2():
                 session, api_url, headers=RAW_HEADERS, desc="API2检测", timeout=30
             )
 
-            if status_code == 200:
+            if status_code == 200:  # API2自身请求成功
                 try:
                     res_json = response.json()
-                    if int(res_json.get("code")) == 200 and int(res_json.get("data")) == 200:
-                        logging.info(f"[API2检测] {link} 成功（目标状态码200），延迟 {latency}s")
+                    target_status = int(res_json.get("data"))
+                    # 目标链接返回200/301/302均视为成功
+                    if is_success_status_code(target_status):
+                        logging.info(f"[API2检测] {link} 成功（目标状态码: {target_status}），延迟 {latency}s")
                         item['check_layer'] = "API2检测"
-                        item['raw_status_code'] = 200
+                        item['raw_status_code'] = target_status
                         results.append((item, latency))
                         continue
                     else:
-                        item['raw_status_code'] = f"{res_json.get('code')},{res_json.get('data')}"
-                        logging.warning(f"[API2检测] {link} 失败（返回值: {item['raw_status_code']}），检测完毕")
+                        item['raw_status_code'] = target_status
+                        logging.warning(f"[API2检测] {link} 失败（目标状态码: {target_status}），检测完毕")
                 except Exception as e:
                     logging.error(f"[API2解析] {link} 失败: {e}，检测完毕")
             else:
-                logging.warning(f"[API2请求] {link} 失败（状态码: {status_code}），检测完毕")
+                logging.warning(f"[API2请求] {link} 失败（自身状态码: {status_code}），检测完毕")
 
             results.append((item, -1))
         return results
@@ -302,13 +311,13 @@ def main():
                 ssl_ok = item.get('ssl_ok', False)
                 ssl_message = item.get('ssl_message', "未检测")
 
-                # 白名单逻辑：即使SSL失败或所有检测失败，仍视为可访问
+                # 白名单逻辑：即使检测失败，仍视为可访问
                 if in_whitelist:
                     final_latency = latency if latency != -1 else -1
                     final_fail_count = 0
                     is_accessible = True
                 else:
-                    # 非白名单：SSL失败或所有检测失败均视为不可访问
+                    # 非白名单：根据最终检测结果判断
                     final_latency = latency
                     prev_entry = next((x for x in previous_results.get("link_status", []) if x.get("link") == link), {})
                     prev_fail_count = prev_entry.get("fail_count", 0)
