@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>友链状态检测</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    
+    <!-- Tailwind 配置 -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#3B82F6',
+                        success: '#10B981',
+                        danger: '#EF4444',
+                        warning: '#F59E0B',
+                        info: '#6366F1',
+                        dark: '#1E293B',
+                        light: '#F8FAFC'
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                    },
+                    boxShadow: {
+                        'card': '0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03)',
+                        'card-hover': '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.04)',
+                    }
+                },
+            }
+        }
+    </script>
+    
+    <style type="text/tailwindcss">
+        @layer utilities {
+            .content-auto {
+                content-visibility: auto;
+            }
+            .card-transition {
+                transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            }
+            .footer-item {
+                @apply text-gray-500 text-sm my-2;
+            }
+            .footer-separator {
+                @apply mx-3 text-gray-400;
+            }
+            .pulse-animation {
+                animation: pulse 2s infinite ease-in-out;
+            }
+            @keyframes pulse {
+                0%, 100% {
+                    transform: scale(1);
+                    opacity: 1;
+                }
+                50% {
+                    transform: scale(1.2);
+                    opacity: 0.7;
+                }
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-dark font-sans text-base">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <!-- 页头 -->
+        <header class="text-center mb-8 pb-4 border-b border-gray-100">
+            <h1 class="text-2xl font-bold text-dark mb-2">友链状态检测</h1>
+            <p class="text-gray-500">按加载速度排序 · 错误链接在底部</p>
+        </header>
+        
+        <!-- 状态统计（保持4个卡片） -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+            <!-- 总链接数 -->
+            <div class="bg-white rounded-lg shadow-card p-5 card-transition hover:shadow-card-hover hover:-translate-y-1">
+                <h3 class="text-gray-500 text-sm font-medium uppercase tracking-wider mb-2">总链接数</h3>
+                <div class="text-xl font-bold text-primary" id="total-count">加载中...</div>
+            </div>
+            
+            <!-- 正常链接 -->
+            <div class="bg-white rounded-lg shadow-card p-5 card-transition hover:shadow-card-hover hover:-translate-y-1">
+                <h3 class="text-gray-500 text-sm font-medium uppercase tracking-wider mb-2">正常链接</h3>
+                <div class="text-xl font-bold text-success" id="accessible-count">加载中...</div>
+            </div>
+            
+            <!-- 错误链接 -->
+            <div class="bg-white rounded-lg shadow-card p-5 card-transition hover:shadow-card-hover hover:-translate-y-1">
+                <h3 class="text-gray-500 text-sm font-medium uppercase tracking-wider mb-2">错误链接</h3>
+                <div class="text-xl font-bold text-danger" id="inaccessible-count">加载中...</div>
+            </div>
+            
+            <!-- 最后检测时间 -->
+            <div class="bg-white rounded-lg shadow-card p-5 card-transition hover:shadow-card-hover hover:-translate-y-1">
+                <h3 class="text-gray-500 text-sm font-medium uppercase tracking-wider mb-2">最后检测时间</h3>
+                <div class="text-xl font-bold text-warning" id="timestamp">加载中...</div>
+            </div>
+        </div>
+        
+        <!-- 链接卡片网格（保持4列布局） -->
+        <div id="links-container" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+            <!-- 加载状态 -->
+            <div class="col-span-full flex flex-col items-center justify-center py-16 text-gray-500">
+                <div class="w-10 h-10 border-4 border-gray-200 border-t-primary rounded-full animate-spin mb-3"></div>
+                <p>正在从API加载数据...</p>
+            </div>
+        </div>
+        
+        <!-- 页脚（所有分隔符完全统一） -->
+        <footer class="text-center pt-6 border-t border-gray-100">
+            <p class="footer-item">
+                数据来源：<a href="https://www.dao.js.cn" class="text-primary hover:underline font-medium" target="_blank">懋和道人</a>
+                <span class="footer-separator">|</span>
+                技术支撑：<a href="https://www.liushen.fun/" class="text-primary hover:underline font-medium" target="_blank">清羽飞扬</a>
+            </p>            
+            <p class="footer-item">
+                网站总请求量：<span id="vercount_value_site_pv" class="font-medium text-info">加载中...</span>
+                <span class="footer-separator">|</span>
+                独立访客数：<span id="vercount_value_site_uv" class="font-medium text-info">加载中...</span>
+            </p>
+            <p class="footer-item">
+                目标来源仓库：<a href="https://github.com/wulintang/check-flink" class="text-primary hover:underline font-medium" target="_blank">check-flink</a>
+            </p>
+        </footer>
+    </div>
+
+    <script>
+        // 核心配置
+        const UMAMI_CONFIG = {
+            apiBaseUrl: 'https://ji.dao.js.cn',
+            websiteId: 'ed1ec7f7-e3d0-41e9-b913-9f58f25b717f',
+            token: '9SqlAZNiDqUP+HLl/pgyGlUnAbb6CB/DsjveBKiK4/LB/Zz3toBFcMEbcQymaAjgG07RRl8frN9k9RoVk0JDEZnxed0MX+x5RklJK5Uw758T0Itdzss6CKzMA7QAtUyQ6RXmYpxfloUYTGTaPoFXIr4Rrx6ZGcjIS+tgVf8jBlUbeCxb0lgFqq2EOCK9j/N1r5U+l6jhz6ARxG4kFOlrGh83HWKFqGyKWQEzeq+yRzs2fEWJWOaK6DAakpd3B6Dke4u6rl3e9YMgbM+0J7f1w46e5Qv1N1hApWo3WUUXnMJLi5eu8btFv880KcrQ/7LkgmbwzFh2kvrbzbz+lhojHk70+E2JgEya/Q==',
+            cacheKey: 'umami_total_stats',
+            cacheTime: 600000 // 10分钟缓存
+        };
+
+        // 获取总PV和UV数据
+        async function fetchTotalStats() {
+            // 检查缓存
+            if (localStorage.getItem(UMAMI_CONFIG.cacheKey)) {
+                const cache = JSON.parse(localStorage.getItem(UMAMI_CONFIG.cacheKey));
+                if (Date.now() - cache.timestamp < UMAMI_CONFIG.cacheTime) {
+                    updateStatsUI(cache.data);
+                    return;
+                }
+            }
+
+            try {
+                // 计算时间范围：从年初到现在
+                const start = new Date(new Date().getFullYear(), 0, 1).getTime();
+                const end = Date.now();
+
+                const response = await fetch(`${UMAMI_CONFIG.apiBaseUrl}/api/websites/${UMAMI_CONFIG.websiteId}/stats?` + 
+                    new URLSearchParams({ startAt: start, endAt: end }), {
+                    headers: {
+                        'Authorization': `Bearer ${UMAMI_CONFIG.token}`
+                    }
+                });
+
+                if (!response.ok) throw new Error(`HTTP错误: ${response.status}`);
+                
+                const data = await response.json();
+                const stats = {
+                    total_pv: data.pageviews?.value || 0,
+                    total_uv: data.visitors?.value || 0
+                };
+
+                // 保存缓存
+                localStorage.setItem(UMAMI_CONFIG.cacheKey, JSON.stringify({
+                    timestamp: Date.now(),
+                    data: stats
+                }));
+
+                updateStatsUI(stats);
+            } catch (error) {
+                console.error('获取统计数据失败:', error);
+                document.getElementById('vercount_value_site_pv').textContent = '获取失败';
+                document.getElementById('vercount_value_site_uv').textContent = '获取失败';
+            }
+        }
+
+        // 更新统计数据到页面
+        function updateStatsUI(data) {
+            document.getElementById('vercount_value_site_pv').textContent = data.total_pv.toLocaleString();
+            document.getElementById('vercount_value_site_uv').textContent = data.total_uv.toLocaleString();
+        }
+        
+        // 初始化友链数据
+        function initLinkData() {
+            fetch('/result.json')
+                .then(response => {
+                    if (!response.ok) throw new Error('网络响应异常');
+                    return response.json();
+                })
+                .then(data => {
+                    // 更新友链统计
+                    document.getElementById('total-count').textContent = data.total_count;
+                    document.getElementById('accessible-count').textContent = data.accessible_count;
+                    document.getElementById('inaccessible-count').textContent = data.inaccessible_count;
+                    document.getElementById('timestamp').textContent = data.timestamp;
+                    
+                    // 处理链接排序
+                    const workingLinks = data.link_status.filter(link => link.fail_count === 0);
+                    const errorLinks = data.link_status.filter(link => link.fail_count > 0);
+                    workingLinks.sort((a, b) => a.latency - b.latency);
+                    errorLinks.sort((a, b) => b.fail_count - a.fail_count);
+                    const sortedLinks = [...workingLinks, ...errorLinks];
+                    
+                    // 渲染链接卡片
+                    const linksContainer = document.getElementById('links-container');
+                    linksContainer.innerHTML = '';
+                    
+                    sortedLinks.forEach((link, index) => {
+                        const isSuccess = link.fail_count === 0;
+                        const linkCard = document.createElement('a');
+                        linkCard.href = link.link;
+                        linkCard.target = '_blank';
+                        linkCard.className = `
+                            bg-white rounded-lg shadow-card p-5 card-transition hover:shadow-card-hover hover:-translate-y-1
+                            flex flex-col h-full
+                        `;
+                        
+                        // 渐入动画
+                        linkCard.style.opacity = '0';
+                        linkCard.style.transform = 'translateY(10px)';
+                        
+                        linkCard.innerHTML = `
+                            <div class="flex justify-between items-start mb-3">
+                                <h3 class="text-base font-semibold text-dark hover:text-primary transition-colors line-clamp-1">
+                                    ${link.name}
+                                </h3>
+                                <span class="flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+                                    ${isSuccess ? 'bg-success/10 text-success' : 'bg-danger/10 text-danger'}">
+                                    <span class="w-1.5 h-1.5 rounded-full mr-1 ${isSuccess ? 'bg-success pulse-animation' : 'bg-danger'}"></span>
+                                    ${isSuccess ? '正常' : '错误'}
+                                </span>
+                            </div>
+                            <div class="flex items-center text-gray-500 text-sm mt-auto pt-3 border-t border-gray-50">
+                                <i class="fa fa-clock-o mr-2 text-warning"></i>
+                                <span>${isSuccess ? link.latency + ' s' : '-'}</span>
+                            </div>
+                        `;
+                        
+                        linksContainer.appendChild(linkCard);
+                        
+                        // 触发动画
+                        setTimeout(() => {
+                            linkCard.style.transition = 'opacity 0.4s ease, transform 0.4s ease';
+                            linkCard.style.opacity = '1';
+                            linkCard.style.transform = 'translateY(0)';
+                        }, 60 * index);
+                    });
+                })
+                .catch(error => {
+                    console.error('友链数据加载失败:', error);
+                    const linksContainer = document.getElementById('links-container');
+                    linksContainer.innerHTML = `
+                        <div class="col-span-full flex flex-col items-center justify-center py-16 text-gray-500">
+                            <div class="w-10 h-10 text-danger mb-3">
+                                <i class="fa fa-exclamation-circle text-2xl"></i>
+                            </div>
+                            <p>加载数据失败: ${error.message}</p>
+                        </div>
+                    `;
+                });
+        }
+        
+        // 页面加载时初始化
+        window.addEventListener('DOMContentLoaded', () => {
+            fetchTotalStats();  // 获取总PV和UV
+            initLinkData();     // 初始化友链数据
+        });
+    </script>
+</body>
+</html>
