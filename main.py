@@ -21,7 +21,7 @@ logging.basicConfig(
 
 warnings.filterwarnings("ignore", message="Unverified HTTPS request is being made.*")
 
-# 请求头配置（保持不变）
+# 请求头配置
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -73,7 +73,7 @@ def check_ssl_for_accessibility(url):
     start_time = time.time()
     parsed_url = urlparse(url)
     if parsed_url.scheme != "https":
-        latency = round(time.time() - start_time, 2)  # 强制两位小数
+        latency = round(time.time() - start_time, 2)
         return (True, "非HTTPS链接，无需SSL检测", latency)
     
     hostname = parsed_url.hostname
@@ -87,7 +87,7 @@ def check_ssl_for_accessibility(url):
             with context.wrap_socket(sock, server_hostname=hostname) as secure_sock:
                 cert = secure_sock.getpeercert()
                 expiry_date = datetime.strptime(cert['notAfter'], '%b %d %H:%M:%S %Y %Z')
-                latency = round(time.time() - start_time, 2)  # 强制两位小数
+                latency = round(time.time() - start_time, 2)
                 if expiry_date > datetime.now():
                     return (True, "SSL证书有效且未过期", latency)
                 else:
@@ -107,10 +107,10 @@ def request_url(session, url, headers=HEADERS, desc="", timeout=15, verify=True)
     try:
         start_time = time.time()
         response = session.get(url, headers=headers, timeout=timeout, verify=verify)
-        latency = round(time.time() - start_time, 2)  # 强制两位小数
+        latency = round(time.time() - start_time, 2)
         return response, latency, response.status_code
     except requests.RequestException as e:
-        latency = round(time.time() - start_time, 2)  # 强制两位小数
+        latency = round(time.time() - start_time, 2)
         logging.warning(f"[{desc}] 请求失败: {url}，错误: {e}，耗时 {latency}s")
         return None, latency, -1
 
@@ -175,7 +175,7 @@ def check_direct_and_proxy(item, session):
     # 白名单判断耗时（强制两位小数）
     whitelist_check_start = time.time()
     item['is_whitelist'] = is_in_whitelist(link)
-    whitelist_latency = round(time.time() - whitelist_check_start, 2)  # 强制两位小数
+    whitelist_latency = round(time.time() - whitelist_check_start, 2)
     total_latency += whitelist_latency
     item['whitelist_check_latency'] = whitelist_latency
 
@@ -183,18 +183,17 @@ def check_direct_and_proxy(item, session):
     ssl_ok, ssl_msg, ssl_latency = check_ssl_for_accessibility(link)
     item['ssl_ok'] = ssl_ok
     item['ssl_message'] = ssl_msg
-    total_latency = round(total_latency + ssl_latency, 2)  # 累加后再 rounding 避免误差
+    total_latency = round(total_latency + ssl_latency, 2)
     
     if not ssl_ok:
-        logging.warning(f"[SSL检测] {link} 异常: {ssl_msg} → 不可访问，累计耗时 {total_latency}s")
-        item['raw_status_code'] = -2
-        return item, total_latency
+        # 只记录警告，不终止后续检测
+        logging.warning(f"[SSL检测] {link} 异常: {ssl_msg}，继续尝试其他访问方式，累计耗时 {total_latency}s")
     else:
         logging.info(f"[SSL检测] {link} {ssl_msg}，耗时 {ssl_latency}s → 继续检测")
 
-    # 直接访问（累计耗时强制两位小数）
+    # 直接访问（无论SSL是否成功，都继续尝试）
     response, direct_latency, status_code = request_url(session, link, desc="直接访问")
-    total_latency = round(total_latency + direct_latency, 2)  # 累加后 rounding
+    total_latency = round(total_latency + direct_latency, 2)
     
     if is_success_status_code(status_code):
         logging.info(f"[直接访问] {link} 成功（状态码: {status_code}），累计耗时 {total_latency}s")
@@ -209,7 +208,7 @@ def check_direct_and_proxy(item, session):
     if PROXY_URL_TEMPLATE:
         proxy_url = PROXY_URL_TEMPLATE.format(link)
         response, proxy_latency, status_code = request_url(session, proxy_url, desc="代理访问")
-        total_latency = round(total_latency + proxy_latency, 2)  # 累加后 rounding
+        total_latency = round(total_latency + proxy_latency, 2)
         
         if is_success_status_code(status_code):
             logging.info(f"[代理访问] {link} 成功（状态码: {status_code}），累计耗时 {total_latency}s")
@@ -238,7 +237,7 @@ def handle_api1():
             response, api1_latency, status_code = request_url(
                 session, api_url, headers=RAW_HEADERS, desc="API1检测", timeout=30
             )
-            total_latency = round(total_latency + api1_latency, 2)  # 累加后 rounding
+            total_latency = round(total_latency + api1_latency, 2)
 
             if status_code == 200:
                 try:
@@ -275,7 +274,7 @@ def handle_api2():
             response, api2_latency, status_code = request_url(
                 session, api_url, headers=RAW_HEADERS, desc="API2检测", timeout=30
             )
-            total_latency = round(total_latency + api2_latency, 2)  # 累加后 rounding
+            total_latency = round(total_latency + api2_latency, 2)
 
             if status_code == 200:
                 try:
@@ -348,7 +347,7 @@ def main():
                 link_status.append({
                     'name': name,
                     'link': link,
-                    'latency': final_latency,  # 确保两位小数
+                    'latency': final_latency,
                     'fail_count': final_fail_count,
                     'check_layer': item.get('check_layer', '未通过任何检测'),
                     'raw_status_code': item.get('raw_status_code', -1),
