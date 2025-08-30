@@ -48,7 +48,8 @@ RAW_HEADERS = {
 
 # 白名单配置
 WHITELIST = [
-    "https://www.quji.org/"
+    "https://www.quji.org/",
+    "https://www.gymxbl.com/"
 ]
 
 PROXY_URL_TEMPLATE = f"{os.getenv('PROXY_URL')}{{}}" if os.getenv("PROXY_URL") else None
