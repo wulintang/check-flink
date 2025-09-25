@@ -168,7 +168,7 @@ def fetch_origin_data(origin_path):
 
 def check_direct_and_proxy(item, session):
     link = item['link']
-    item['check_layer'] = "未通过任何检测"
+    item['check_layer'] = "未通过任何检测"  # 默认初始状态
     item['raw_status_code'] = -1
     total_latency = 0.0
     
@@ -179,7 +179,7 @@ def check_direct_and_proxy(item, session):
     total_latency += whitelist_latency
     item['whitelist_check_latency'] = whitelist_latency
 
-    # SSL检测
+    # SSL检测（核心逻辑）
     parsed_url = urlparse(link)
     ssl_ok, ssl_msg, ssl_latency, ssl_expired = check_ssl_for_accessibility(link)
     item['ssl_ok'] = ssl_ok
@@ -187,29 +187,31 @@ def check_direct_and_proxy(item, session):
     item['ssl_expired'] = ssl_expired
     total_latency = round(total_latency + ssl_latency, 2)
     
-    # 仅证书到期时终止后续访问
+    # 修复：HTTPS证书到期 → 直接标记为不可访问，不执行任何后续检测
     if ssl_expired:
-        logging.error(f"[SSL证书到期] {link} → {ssl_msg}，累计耗时 {total_latency}s，终止后续访问")
+        logging.error(f"[SSL证书到期] {link} → {ssl_msg}，直接判定为不可访问")
+        # 强制标记为不可访问
+        item['is_accessible'] = False
+        item['check_layer'] = "SSL证书到期"  # 明确标记失败原因
         return item, total_latency
-    else:
-        if parsed_url.scheme == "https":
-            logging.info(f"[SSL检测] {link} → {ssl_msg}，继续检测可访问性")
-        else:
-            logging.info(f"[非HTTPS链接] {link}，直接检测可访问性")
+
+    # 只有证书未到期/非HTTPS链接，才继续检测可访问性
+    logging.info(f"[继续检测] {link}（SSL状态：{ssl_msg}）")
 
     # 直接访问检测
     response, direct_latency, status_code = request_url(session, link, desc="直接访问")
     total_latency = round(total_latency + direct_latency, 2)
     
     if is_success_status_code(status_code):
-        logging.info(f"[直接访问] {link} 成功（状态码: {status_code}），累计耗时 {total_latency}s")
+        logging.info(f"[直接访问] {link} 成功（状态码: {status_code}）")
         item['check_layer'] = "直接访问"
         item['raw_status_code'] = status_code
+        item['is_accessible'] = True
         return item, total_latency
 
     # 代理访问检测
     item['raw_status_code'] = status_code
-    logging.warning(f"[直接访问] {link} 失败（状态码: {status_code}），耗时 {direct_latency}s，尝试代理访问")
+    logging.warning(f"[直接访问] {link} 失败（状态码: {status_code}），尝试代理访问")
     
     if PROXY_URL_TEMPLATE:
         proxy_url = PROXY_URL_TEMPLATE.format(link)
@@ -217,13 +219,14 @@ def check_direct_and_proxy(item, session):
         total_latency = round(total_latency + proxy_latency, 2)
         
         if is_success_status_code(status_code):
-            logging.info(f"[代理访问] {link} 成功（状态码: {status_code}），累计耗时 {total_latency}s")
+            logging.info(f"[代理访问] {link} 成功（状态码: {status_code}）")
             item['check_layer'] = "代理访问"
             item['raw_status_code'] = status_code
+            item['is_accessible'] = True
             return item, total_latency
         
         item['raw_status_code'] = status_code
-        logging.warning(f"[代理访问] {link} 失败（状态码: {status_code}），耗时 {proxy_latency}s，进入API1检测")
+        logging.warning(f"[代理访问] {link} 失败（状态码: {status_code}），进入API检测")
 
     # 进入API检测队列
     item['current_latency'] = total_latency
@@ -250,18 +253,19 @@ def handle_api1():
                     res_json = response.json()
                     target_status = int(res_json.get("httpcode"))
                     if is_success_status_code(target_status):
-                        logging.info(f"[API1检测] {link} 成功（目标状态码: {target_status}），累计耗时 {total_latency}s")
+                        logging.info(f"[API1检测] {link} 成功（目标状态码: {target_status}）")
                         item['check_layer'] = "API1检测"
                         item['raw_status_code'] = target_status
+                        item['is_accessible'] = True
                         results.append((item, total_latency))
                         continue
                     else:
                         item['raw_status_code'] = target_status
-                        logging.warning(f"[API1检测] {link} 失败（目标状态码: {target_status}），进入API2检测")
+                        logging.warning(f"[API1检测] {link} 失败（目标状态码: {target_status}）")
                 except Exception as e:
-                    logging.error(f"[API1解析] {link} 失败: {e}，进入API2检测")
+                    logging.error(f"[API1解析] {link} 失败: {e}")
             else:
-                logging.warning(f"[API1请求] {link} 失败（自身状态码: {status_code}），进入API2检测")
+                logging.warning(f"[API1请求] {link} 失败（自身状态码: {status_code}）")
 
             item['current_latency'] = total_latency
             api2_queue.put(item)
@@ -287,19 +291,22 @@ def handle_api2():
                     res_json = response.json()
                     target_status = int(res_json.get("data"))
                     if is_success_status_code(target_status):
-                        logging.info(f"[API2检测] {link} 成功（目标状态码: {target_status}），累计耗时 {total_latency}s")
+                        logging.info(f"[API2检测] {link} 成功（目标状态码: {target_status}）")
                         item['check_layer'] = "API2检测"
                         item['raw_status_code'] = target_status
+                        item['is_accessible'] = True
                         results.append((item, total_latency))
                         continue
                     else:
                         item['raw_status_code'] = target_status
-                        logging.warning(f"[API2检测] {link} 失败（目标状态码: {target_status}），检测完毕")
+                        logging.warning(f"[API2检测] {link} 失败（目标状态码: {target_status}）")
                 except Exception as e:
-                    logging.error(f"[API2解析] {link} 失败: {e}，检测完毕")
+                    logging.error(f"[API2解析] {link} 失败: {e}")
             else:
-                logging.warning(f"[API2请求] {link} 失败（自身状态码: {status_code}），检测完毕")
+                logging.warning(f"[API2请求] {link} 失败（自身状态码: {status_code}）")
 
+            # API2检测失败，最终标记为不可访问
+            item['is_accessible'] = False
             results.append((item, total_latency))
         return results
 
@@ -339,15 +346,17 @@ def main():
                 ssl_ok = item.get('ssl_ok', False)
                 ssl_message = item.get('ssl_message', "未检测")
                 ssl_expired = item.get('ssl_expired', False)
+                # 从item中获取is_accessible，证书到期的链接已在此处被标记为False
+                is_accessible = item.get('is_accessible', False)
 
-                if not in_whitelist:
+                # 白名单链接强制标记为可访问
+                if in_whitelist:
+                    is_accessible = True
+                    final_fail_count = 0
+                else:
                     prev_entry = next((x for x in previous_results.get("link_status", []) if x.get("link") == link), {})
                     prev_fail_count = prev_entry.get("fail_count", 0)
-                    final_fail_count = prev_fail_count + 1 if item['check_layer'] == "未通过任何检测" else 0
-                    is_accessible = (item['check_layer'] != "未通过任何检测")
-                else:
-                    final_fail_count = 0
-                    is_accessible = True
+                    final_fail_count = prev_fail_count + 1 if not is_accessible else 0
 
                 final_latency = round(latency, 2)
                 link_status.append({
@@ -384,3 +393,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
