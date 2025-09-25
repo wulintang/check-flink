@@ -69,6 +69,7 @@ def is_in_whitelist(link):
     return (link in WHITELIST) or (domain in WHITELIST)
 
 def check_ssl_for_accessibility(url):
+    """SSL检测：返回（是否正常，错误信息，耗时，是否证书到期）"""
     start_time = time.time()
     parsed_url = urlparse(url)
     if parsed_url.scheme != "https":
@@ -102,6 +103,7 @@ def check_ssl_for_accessibility(url):
         return (False, f"SSL连接失败（{str(e)}，非证书到期）", latency, False)
 
 def request_url(session, url, headers=HEADERS, desc="", timeout=15, verify=True):
+    """统一请求函数，返回响应、延迟、状态码"""
     try:
         start_time = time.time()
         response = session.get(url, headers=headers, timeout=timeout, verify=verify)
@@ -170,18 +172,22 @@ def check_direct_and_proxy(item, session):
     item['raw_status_code'] = -1
     total_latency = 0.0
     
+    # 白名单判断
     whitelist_check_start = time.time()
     item['is_whitelist'] = is_in_whitelist(link)
     whitelist_latency = round(time.time() - whitelist_check_start, 2)
     total_latency += whitelist_latency
     item['whitelist_check_latency'] = whitelist_latency
 
+    # SSL检测
+    parsed_url = urlparse(link)
     ssl_ok, ssl_msg, ssl_latency, ssl_expired = check_ssl_for_accessibility(link)
     item['ssl_ok'] = ssl_ok
     item['ssl_message'] = ssl_msg
     item['ssl_expired'] = ssl_expired
     total_latency = round(total_latency + ssl_latency, 2)
     
+    # 仅证书到期时终止后续访问
     if ssl_expired:
         logging.error(f"[SSL证书到期] {link} → {ssl_msg}，累计耗时 {total_latency}s，终止后续访问")
         return item, total_latency
@@ -191,6 +197,7 @@ def check_direct_and_proxy(item, session):
         else:
             logging.info(f"[非HTTPS链接] {link}，直接检测可访问性")
 
+    # 直接访问检测
     response, direct_latency, status_code = request_url(session, link, desc="直接访问")
     total_latency = round(total_latency + direct_latency, 2)
     
@@ -200,6 +207,7 @@ def check_direct_and_proxy(item, session):
         item['raw_status_code'] = status_code
         return item, total_latency
 
+    # 代理访问检测
     item['raw_status_code'] = status_code
     logging.warning(f"[直接访问] {link} 失败（状态码: {status_code}），耗时 {direct_latency}s，尝试代理访问")
     
@@ -217,6 +225,7 @@ def check_direct_and_proxy(item, session):
         item['raw_status_code'] = status_code
         logging.warning(f"[代理访问] {link} 失败（状态码: {status_code}），耗时 {proxy_latency}s，进入API1检测")
 
+    # 进入API检测队列
     item['current_latency'] = total_latency
     api1_queue.put(item)
     
