@@ -69,7 +69,7 @@ def is_in_whitelist(link):
     return (link in WHITELIST) or (domain in WHITELIST)
 
 def check_ssl_for_accessibility(url):
-    """SSL检测：返回（是否正常，错误信息，耗时，是否证书到期）"""
+    """SSL检测：返回（是否正常，错误信息，耗时，是否属于证书有效性问题）"""
     start_time = time.time()
     parsed_url = urlparse(url)
     if parsed_url.scheme != "https":
@@ -91,19 +91,29 @@ def check_ssl_for_accessibility(url):
                 if expiry_date > datetime.now():
                     return (True, f"SSL证书有效（到期时间: {expiry_date.strftime('%Y-%m-%d')}）", latency, False)
                 else:
+                    # 证书到期：属于证书有效性问题
                     return (False, f"SSL证书已到期（到期时间: {expiry_date.strftime('%Y-%m-%d')}）", latency, True)
     except ssl.CertificateError:
+        # 证书无效（包括域名不匹配、不被信任等）：属于证书有效性问题
         latency = round(time.time() - start_time, 2)
-        return (False, "SSL证书无效（不被信任/域名不匹配，非到期）", latency, False)
+        return (False, "SSL证书无效（域名不匹配/不被信任）", latency, True)
     except socket.timeout:
+        # 超时：属于网络问题，非证书有效性问题
         latency = round(time.time() - start_time, 2)
-        return (False, "SSL连接超时（非证书问题）", latency, False)
+        return (False, "SSL连接超时（网络问题）", latency, False)
     except Exception as e:
-        latency = round(time.time() - start_time, 2)
-        return (False, f"SSL连接失败（{str(e)}，非证书到期）", latency, False)
+        # 其他错误：区分是否为证书相关
+        if "certificate" in str(e).lower() or "ssl" in str(e).lower():
+            # 明确提到证书/SSL的错误：属于证书有效性问题
+            latency = round(time.time() - start_time, 2)
+            return (False, f"SSL证书错误: {str(e)}", latency, True)
+        else:
+            # 其他网络错误（如不可达）：非证书问题
+            latency = round(time.time() - start_time, 2)
+            return (False, f"网络连接失败: {str(e)}", latency, False)
 
 def request_url(session, url, headers=HEADERS, desc="", timeout=15, verify=True):
-    """统一请求函数，返回响应、延迟、状态码"""
+    """统一请求函数"""
     try:
         start_time = time.time()
         response = session.get(url, headers=headers, timeout=timeout, verify=verify)
@@ -150,17 +160,14 @@ def fetch_origin_data(origin_path):
     try:
         data = json.loads(content)
         if isinstance(data, dict) and 'link_list' in data:
-            logging.info("成功解析 JSON 格式数据")
             return data['link_list']
         elif isinstance(data, list):
-            logging.info("成功解析 JSON 数组格式数据")
             return data
     except json.JSONDecodeError:
         pass
 
     try:
         rows = list(csv.reader(content.splitlines()))
-        logging.info("成功解析 CSV 格式数据")
         return [{'name': row[0], 'link': row[1]} for row in rows if len(row) == 2]
     except Exception as e:
         logging.error(f"CSV 解析失败: {e}")
@@ -168,7 +175,7 @@ def fetch_origin_data(origin_path):
 
 def check_direct_and_proxy(item, session):
     link = item['link']
-    item['check_layer'] = "未通过任何检测"  # 默认初始状态
+    item['check_layer'] = "未通过任何检测"
     item['raw_status_code'] = -1
     total_latency = 0.0
     
@@ -179,24 +186,23 @@ def check_direct_and_proxy(item, session):
     total_latency += whitelist_latency
     item['whitelist_check_latency'] = whitelist_latency
 
-    # SSL检测（核心逻辑）
+    # SSL检测（核心修复）
     parsed_url = urlparse(link)
-    ssl_ok, ssl_msg, ssl_latency, ssl_expired = check_ssl_for_accessibility(link)
+    ssl_ok, ssl_msg, ssl_latency, is_cert_invalid = check_ssl_for_accessibility(link)
     item['ssl_ok'] = ssl_ok
     item['ssl_message'] = ssl_msg
-    item['ssl_expired'] = ssl_expired
+    item['is_cert_invalid'] = is_cert_invalid  # 标记是否属于证书有效性问题
     total_latency = round(total_latency + ssl_latency, 2)
     
-    # 修复：HTTPS证书到期 → 直接标记为不可访问，不执行任何后续检测
-    if ssl_expired:
-        logging.error(f"[SSL证书到期] {link} → {ssl_msg}，直接判定为不可访问")
-        # 强制标记为不可访问
+    # 关键修复：所有证书有效性问题（包括到期、域名不匹配、不被信任等）→ 直接判定不可访问
+    if is_cert_invalid:
+        logging.error(f"[SSL证书问题] {link} → {ssl_msg}，直接判定为不可访问，终止后续检测")
         item['is_accessible'] = False
-        item['check_layer'] = "SSL证书到期"  # 明确标记失败原因
+        item['check_layer'] = "SSL证书无效"
         return item, total_latency
 
-    # 只有证书未到期/非HTTPS链接，才继续检测可访问性
-    logging.info(f"[继续检测] {link}（SSL状态：{ssl_msg}）")
+    # 只有证书有效/非HTTPS链接，才继续检测可访问性
+    logging.info(f"[证书正常] {link}（{ssl_msg}），继续检测可访问性")
 
     # 直接访问检测
     response, direct_latency, status_code = request_url(session, link, desc="直接访问")
@@ -259,14 +265,8 @@ def handle_api1():
                         item['is_accessible'] = True
                         results.append((item, total_latency))
                         continue
-                    else:
-                        item['raw_status_code'] = target_status
-                        logging.warning(f"[API1检测] {link} 失败（目标状态码: {target_status}）")
                 except Exception as e:
                     logging.error(f"[API1解析] {link} 失败: {e}")
-            else:
-                logging.warning(f"[API1请求] {link} 失败（自身状态码: {status_code}）")
-
             item['current_latency'] = total_latency
             api2_queue.put(item)
             results.append((item, total_latency))
@@ -297,15 +297,10 @@ def handle_api2():
                         item['is_accessible'] = True
                         results.append((item, total_latency))
                         continue
-                    else:
-                        item['raw_status_code'] = target_status
-                        logging.warning(f"[API2检测] {link} 失败（目标状态码: {target_status}）")
                 except Exception as e:
                     logging.error(f"[API2解析] {link} 失败: {e}")
-            else:
-                logging.warning(f"[API2请求] {link} 失败（自身状态码: {status_code}）")
-
-            # API2检测失败，最终标记为不可访问
+            
+            # API2检测失败，标记为不可访问
             item['is_accessible'] = False
             results.append((item, total_latency))
         return results
@@ -345,8 +340,7 @@ def main():
                 in_whitelist = item.get('is_whitelist', False)
                 ssl_ok = item.get('ssl_ok', False)
                 ssl_message = item.get('ssl_message', "未检测")
-                ssl_expired = item.get('ssl_expired', False)
-                # 从item中获取is_accessible，证书到期的链接已在此处被标记为False
+                is_cert_invalid = item.get('is_cert_invalid', False)
                 is_accessible = item.get('is_accessible', False)
 
                 # 白名单链接强制标记为可访问
@@ -368,7 +362,7 @@ def main():
                     'raw_status_code': item.get('raw_status_code', -1),
                     'ssl_ok': ssl_ok,
                     'ssl_message': ssl_message,
-                    'ssl_expired': ssl_expired,
+                    'is_cert_invalid': is_cert_invalid,
                     'is_whitelist': in_whitelist,
                     'is_accessible': is_accessible
                 })
