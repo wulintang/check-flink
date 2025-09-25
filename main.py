@@ -69,17 +69,16 @@ def is_in_whitelist(link):
     return (link in WHITELIST) or (domain in WHITELIST)
 
 def check_ssl_for_accessibility(url):
-    """SSL检测：返回（是否正常，错误信息，耗时），强制保留两位小数"""
     start_time = time.time()
     parsed_url = urlparse(url)
     if parsed_url.scheme != "https":
         latency = round(time.time() - start_time, 2)
-        return (True, "非HTTPS链接，无需SSL检测", latency)
+        return (True, "非HTTPS链接，无需SSL检测", latency, False)
     
     hostname = parsed_url.hostname
     if not hostname:
         latency = round(time.time() - start_time, 2)
-        return (False, "主机名解析失败", latency)
+        return (False, "主机名解析失败（非证书问题）", latency, False)
     
     try:
         context = ssl.create_default_context()
@@ -89,21 +88,20 @@ def check_ssl_for_accessibility(url):
                 expiry_date = datetime.strptime(cert['notAfter'], '%b %d %H:%M:%S %Y %Z')
                 latency = round(time.time() - start_time, 2)
                 if expiry_date > datetime.now():
-                    return (True, "SSL证书有效且未过期", latency)
+                    return (True, f"SSL证书有效（到期时间: {expiry_date.strftime('%Y-%m-%d')}）", latency, False)
                 else:
-                    return (False, f"SSL证书已过期（过期时间: {expiry_date}）", latency)
+                    return (False, f"SSL证书已到期（到期时间: {expiry_date.strftime('%Y-%m-%d')}）", latency, True)
     except ssl.CertificateError:
         latency = round(time.time() - start_time, 2)
-        return (False, "SSL证书无效（不被信任或域名不匹配）", latency)
+        return (False, "SSL证书无效（不被信任/域名不匹配，非到期）", latency, False)
     except socket.timeout:
         latency = round(time.time() - start_time, 2)
-        return (False, "SSL连接超时", latency)
+        return (False, "SSL连接超时（非证书问题）", latency, False)
     except Exception as e:
         latency = round(time.time() - start_time, 2)
-        return (False, f"SSL连接失败: {str(e)}", latency)
+        return (False, f"SSL连接失败（{str(e)}，非证书到期）", latency, False)
 
 def request_url(session, url, headers=HEADERS, desc="", timeout=15, verify=True):
-    """统一请求函数，延迟强制保留两位小数"""
     try:
         start_time = time.time()
         response = session.get(url, headers=headers, timeout=timeout, verify=verify)
@@ -166,35 +164,33 @@ def fetch_origin_data(origin_path):
         logging.error(f"CSV 解析失败: {e}")
         return []
 
-# -------------------------- 核心优化：SSL失败时终止后续访问 --------------------------
 def check_direct_and_proxy(item, session):
     link = item['link']
     item['check_layer'] = "未通过任何检测"
     item['raw_status_code'] = -1
-    total_latency = 0.0  # 累计总耗时（初始化为浮点数）
+    total_latency = 0.0
     
-    # 白名单判断耗时（强制两位小数）
     whitelist_check_start = time.time()
     item['is_whitelist'] = is_in_whitelist(link)
     whitelist_latency = round(time.time() - whitelist_check_start, 2)
     total_latency += whitelist_latency
     item['whitelist_check_latency'] = whitelist_latency
 
-    # SSL检测（累计耗时强制两位小数）
-    ssl_ok, ssl_msg, ssl_latency = check_ssl_for_accessibility(link)
+    ssl_ok, ssl_msg, ssl_latency, ssl_expired = check_ssl_for_accessibility(link)
     item['ssl_ok'] = ssl_ok
     item['ssl_message'] = ssl_msg
+    item['ssl_expired'] = ssl_expired
     total_latency = round(total_latency + ssl_latency, 2)
     
-    # 关键优化：SSL检测失败 → 直接返回，不执行后续访问
-    if not ssl_ok:
-        logging.error(f"[SSL检测失败] {link} → {ssl_msg}，累计耗时 {total_latency}s，终止后续访问")
+    if ssl_expired:
+        logging.error(f"[SSL证书到期] {link} → {ssl_msg}，累计耗时 {total_latency}s，终止后续访问")
         return item, total_latency
-    # 仅SSL成功时，才继续后续访问流程
     else:
-        logging.info(f"[SSL检测] {link} {ssl_msg}，耗时 {ssl_latency}s → 继续检测")
+        if parsed_url.scheme == "https":
+            logging.info(f"[SSL检测] {link} → {ssl_msg}，继续检测可访问性")
+        else:
+            logging.info(f"[非HTTPS链接] {link}，直接检测可访问性")
 
-    # 直接访问（仅SSL成功时执行）
     response, direct_latency, status_code = request_url(session, link, desc="直接访问")
     total_latency = round(total_latency + direct_latency, 2)
     
@@ -204,7 +200,6 @@ def check_direct_and_proxy(item, session):
         item['raw_status_code'] = status_code
         return item, total_latency
 
-    # 代理访问（仅SSL成功且直接访问失败时执行）
     item['raw_status_code'] = status_code
     logging.warning(f"[直接访问] {link} 失败（状态码: {status_code}），耗时 {direct_latency}s，尝试代理访问")
     
@@ -222,20 +217,18 @@ def check_direct_and_proxy(item, session):
         item['raw_status_code'] = status_code
         logging.warning(f"[代理访问] {link} 失败（状态码: {status_code}），耗时 {proxy_latency}s，进入API1检测")
 
-    # 传递累计耗时（仅SSL成功且代理访问失败时执行）
     item['current_latency'] = total_latency
     api1_queue.put(item)
     
     return item, total_latency
 
-# -------------------------- 以下函数完全保留原始逻辑 --------------------------
 def handle_api1():
     with requests.Session() as session:
         results = []
         while not api1_queue.empty():
             item = api1_queue.get()
             link = item['link']
-            total_latency = item.get('current_latency', 0.0)  # 继承前序耗时
+            total_latency = item.get('current_latency', 0.0)
             
             api_url = f"https://v.api.aa1.cn/api/httpcode/?url={link}"
             response, api1_latency, status_code = request_url(
@@ -272,7 +265,7 @@ def handle_api2():
         while not api2_queue.empty():
             item = api2_queue.get()
             link = item['link']
-            total_latency = item.get('current_latency', 0.0)  # 继承前序耗时
+            total_latency = item.get('current_latency', 0.0)
             
             api_url = f"https://v2.xxapi.cn/api/status?url={link}"
             response, api2_latency, status_code = request_url(
@@ -336,6 +329,7 @@ def main():
                 in_whitelist = item.get('is_whitelist', False)
                 ssl_ok = item.get('ssl_ok', False)
                 ssl_message = item.get('ssl_message', "未检测")
+                ssl_expired = item.get('ssl_expired', False)
 
                 if not in_whitelist:
                     prev_entry = next((x for x in previous_results.get("link_status", []) if x.get("link") == link), {})
@@ -346,7 +340,6 @@ def main():
                     final_fail_count = 0
                     is_accessible = True
 
-                # 最终延迟再次 rounding，确保两位小数
                 final_latency = round(latency, 2)
                 link_status.append({
                     'name': name,
@@ -357,6 +350,7 @@ def main():
                     'raw_status_code': item.get('raw_status_code', -1),
                     'ssl_ok': ssl_ok,
                     'ssl_message': ssl_message,
+                    'ssl_expired': ssl_expired,
                     'is_whitelist': in_whitelist,
                     'is_accessible': is_accessible
                 })
