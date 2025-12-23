@@ -223,7 +223,10 @@ def handle_api_requests(session):
         if response:
             try:
                 res_json = response.json()
-                if int(res_json.get("code")) == 200 and int(res_json.get("data")) == 200:
+                # ========== 关键修改：只有data=200才算成功 ==========
+                api_code = int(res_json.get("code"))
+                target_status = int(res_json.get("data"))
+                if api_code == 200 and target_status == 200:
                     logging.info(f"[API] 成功访问: {link} ，状态码 200")
                     item['latency'] = latency
                     
@@ -231,8 +234,10 @@ def handle_api_requests(session):
                     if 'linkpage' in item and item['linkpage'] and AUTHOR_URL:
                         has_author_link = check_author_link_in_page(session, item['linkpage'])
                 else:
-                    logging.warning(f"[API] 状态异常: {link} -> [{res_json.get('code')}, {res_json.get('data')}]")
-                    item['latency'] = -1
+                    # 只要target_status不是200，都算失败
+                    logging.warning(f"[API] 状态异常: {link} -> [{api_code}, {target_status}] (访问失败)")
+                    item['latency'] = -1  # 标记为失败
+                # ==============================================
             except Exception as e:
                 logging.error(f"[API] 解析响应失败: {link}，错误: {e}")
                 item['latency'] = -1
