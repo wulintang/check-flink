@@ -45,7 +45,15 @@ RAW_HEADERS = {  # 仅用于获取原始数据，防止接收到Accept-Language�
 }
 
 PROXY_URL_TEMPLATE = f"{os.getenv('PROXY_URL')}{{}}" if os.getenv("PROXY_URL") else None
+# 找到这行代码：
 SOURCE_URL = os.getenv("SOURCE_URL","./link.csv")  # 默认本地文件
+
+# 紧接着添加这3行：
+print("=== 关键调试信息 ===")
+print(f"os.getenv('SOURCE_URL') 的值: [{os.getenv('SOURCE_URL')}]")  # 看是否是空字符串
+print(f"最终 SOURCE_URL 的值: [{SOURCE_URL}]")
+print("====================")
+
 RESULT_FILE = "./result.json"
 AUTHOR_URL = os.getenv("AUTHOR_URL","www.dao.js.cn")  # 作者URL，用于检测反链
 api_request_queue = Queue()
