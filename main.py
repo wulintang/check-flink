@@ -19,6 +19,24 @@ logging.basicConfig(
 
 warnings.filterwarnings("ignore", message="Unverified HTTPS request is being made.*")
 
+# ========== 核心新增：白名单配置（按需修改） ==========
+# 1. 访问白名单：这些链接跳过访问检测，直接标记为"可访问"
+ACCESS_WHITELIST = [
+    "https://www.gymxbl.com/",
+    "https://www.quji.org/",
+    "https://www.52txr.cn/"
+    # 可继续添加需要跳过访问检测的链接
+]
+
+# 2. 反链白名单：这些链接跳过反链检测，直接标记为"有反链"
+LINK_WHITELIST = [
+    "https://www.gymxbl.com/",
+    "https://www.quji.org/",
+    "https://www.52txr.cn/"
+    # 可继续添加需要跳过反链检测的链接
+]
+# =====================================================
+
 # 请求头统一配置
 HEADERS = {
     "User-Agent": (
@@ -46,9 +64,9 @@ RAW_HEADERS = {  # 仅用于获取原始数据，防止接收到Accept-Language�
 
 # 修复：添加SOURCE_URL兜底，避免None
 PROXY_URL_TEMPLATE = f"{os.getenv('PROXY_URL')}{{}}" if os.getenv("PROXY_URL") else None
-SOURCE_URL = os.getenv("SOURCE_URL", "./link.csv")  # 恢复兜底值，避免None
+SOURCE_URL = os.getenv("SOURCE_URL", "./link.csv")  # 恢复兜底值
 RESULT_FILE = "./result.json"
-AUTHOR_URL = os.getenv("AUTHOR_URL","www.dao.js.cn")  # 作者URL，用于检测反链
+AUTHOR_URL = os.getenv("AUTHOR_URL", "www.dao.js.cn")  # 作者URL，用于检测反链
 api_request_queue = Queue()
 
 if PROXY_URL_TEMPLATE:
@@ -190,6 +208,17 @@ def check_link(item, session):
     link = item['link']
     has_author_link = False
     
+    # ========== 新增：白名单判断逻辑 ==========
+    # 1. 访问白名单：直接标记为可访问（latency设为0，代表跳过检测）
+    if link in ACCESS_WHITELIST:
+        logging.info(f"[白名单] {link} 属于访问白名单，跳过访问检测，标记为可访问")
+        # 2. 反链白名单：直接标记为有反链
+        has_author_link = True if link in LINK_WHITELIST else False
+        if link in LINK_WHITELIST:
+            logging.info(f"[白名单] {link} 属于反链白名单，跳过反链检测，标记为有反链")
+        return item, 0, has_author_link  # 0代表跳过检测的可访问状态
+    # =========================================
+    
     for method, url in [("直接访问", link), ("代理访问", PROXY_URL_TEMPLATE.format(link) if PROXY_URL_TEMPLATE else None)]:
         if not url or not is_url(url):
             logging.warning(f"[{method}] 无效链接: {link}")
@@ -198,8 +227,8 @@ def check_link(item, session):
         if response and response.status_code == 200:
             logging.info(f"[{method}] 成功访问: {link} ，延迟 {latency} 秒")
             
-            # 如果链接可达且有linkpage字段，检测友链页面
-            if 'linkpage' in item and item['linkpage'] and AUTHOR_URL:
+            # 如果链接可达且有linkpage字段，检测友链页面（反链白名单已提前判断）
+            if 'linkpage' in item and item['linkpage'] and AUTHOR_URL and link not in LINK_WHITELIST:
                 has_author_link = check_author_link_in_page(session, item['linkpage'])
             
             return item, latency, has_author_link
@@ -209,7 +238,7 @@ def check_link(item, session):
             logging.warning(f"[{method}] 请求失败，Response 无效: {link}")
 
     api_request_queue.put(item)
-    return item, -1, False
+    return item, -1, has_author_link
 
 def handle_api_requests(session):
     results = []
@@ -217,44 +246,54 @@ def handle_api_requests(session):
         time.sleep(0.2)
         item = api_request_queue.get()
         link = item['link']
+        
+        # ========== 新增：API检测阶段也判断白名单 ==========
+        if link in ACCESS_WHITELIST:
+            logging.info(f"[白名单] {link} 属于访问白名单，跳过API检测，标记为可访问")
+            has_author_link = True if link in LINK_WHITELIST else False
+            if link in LINK_WHITELIST:
+                logging.info(f"[白名单] {link} 属于反链白名单，跳过反链检测，标记为有反链")
+            results.append((item, 0, has_author_link))
+            continue
+        # ================================================
+        
         api_url = f"https://v2.xxapi.cn/api/status?url={link}"
-        # api_latency：API请求自身的延迟，和目标链接无关
-        response, api_latency = request_url(session, api_url, headers=RAW_HEADERS, desc="API 检查", timeout=30)
+        response, latency = request_url(session, api_url, headers=RAW_HEADERS, desc="API 检查", timeout=30)
         has_author_link = False
-        # 初始化目标链接的延迟为-1（失败）
-        target_latency = -1
         
         if response:
             try:
                 res_json = response.json()
-                # ========== 关键修改1：明确拆分API码和目标状态码 ==========
-                api_code = int(res_json.get("code", 0))
-                target_status = int(res_json.get("data", 0))
-                
-                if api_code == 200 and target_status == 200:
+                if int(res_json.get("code")) == 200 and int(res_json.get("data")) == 200:
                     logging.info(f"[API] 成功访问: {link} ，状态码 200")
-                    # 目标链接成功，用API延迟作为参考（或你也可以设为0/自定义值）
-                    target_latency = api_latency
+                    item['latency'] = latency
                     
-                    # 如果API检测成功且有linkpage字段，检测友链页面
-                    if 'linkpage' in item and item['linkpage'] and AUTHOR_URL:
+                    # 反链白名单判断
+                    if link in LINK_WHITELIST:
+                        has_author_link = True
+                        logging.info(f"[白名单] {link} 属于反链白名单，标记为有反链")
+                    elif 'linkpage' in item and item['linkpage'] and AUTHOR_URL:
                         has_author_link = check_author_link_in_page(session, item['linkpage'])
                 else:
-                    # 只要target_status不是200，都算失败，target_latency保持-1
-                    logging.warning(f"[API] 状态异常: {link} -> [{api_code}, {target_status}] (访问失败)")
+                    logging.warning(f"[API] 状态异常: {link} -> [{res_json.get('code')}, {res_json.get('data')}]")
+                    item['latency'] = -1
             except Exception as e:
                 logging.error(f"[API] 解析响应失败: {link}，错误: {e}")
-                # 解析失败，保持target_latency=-1
+                item['latency'] = -1
         else:
-            # API请求失败，保持target_latency=-1
-            logging.warning(f"[API] 请求失败: {link}")
+            item['latency'] = -1
         
-        # ========== 关键修改2：用target_latency传递状态，而非item['latency'] ==========
-        results.append((item, target_latency, has_author_link))
+        results.append((item, item.get('latency', -1), has_author_link))
     return results
 
 def main():
     try:
+        # 打印白名单配置，方便验证
+        logging.info(f"=== 白名单配置 ===")
+        logging.info(f"访问白名单: {ACCESS_WHITELIST}")
+        logging.info(f"反链白名单: {LINK_WHITELIST}")
+        logging.info(f"==================")
+        
         link_list = fetch_origin_data(SOURCE_URL)
         if not link_list:
             logging.error("数据源为空或解析失败")
@@ -286,7 +325,7 @@ def main():
 
                 prev_entry = next((x for x in previous_results.get("link_status", []) if x.get("link") == link), {})
                 prev_fail_count = prev_entry.get("fail_count", 0)
-                # 核心判断：latency=-1 就是失败，否则成功
+                # 白名单链接（latency=0）不计入失败次数
                 fail_count = prev_fail_count + 1 if latency == -1 else 0
 
                 link_status.append({
