@@ -32,7 +32,21 @@ ACCESS_WHITELIST = [
 LINK_WHITELIST = [
     "https://www.gymxbl.com/",
     "https://www.quji.org/",
-    "https://www.52txr.cn/"
+    "https://www.52txr.cn/",
+    "https://www.hansjack.com/",
+    "https://blog.ciraos.top/",
+    "http://puo.cn/",
+    "https://www.dalao.net/",
+    "https://www.s17.cn/",
+    "https://siitake.cn/",
+    "https://miraii.cn/",
+    "https://whitebear.im/",
+    "https://www.liuzhixi.cn/",
+    "https://www.liaao.cn/",
+    "https://limitz.top/",
+    "https://www.lihaoyu.cn/",
+    "https://www.imuu.cn/",
+    "https://www.liuzhixi.cn/"
     # 可继续添加需要跳过反链检测的链接
 ]
 # =====================================================
