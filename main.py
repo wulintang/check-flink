@@ -44,8 +44,9 @@ RAW_HEADERS = {  # 仅用于获取原始数据，防止接收到Accept-Language�
     "X-Check-Flink": "2.0"
 }
 
+# 修复：添加SOURCE_URL兜底，避免None
 PROXY_URL_TEMPLATE = f"{os.getenv('PROXY_URL')}{{}}" if os.getenv("PROXY_URL") else None
-SOURCE_URL = os.getenv("SOURCE_URL")  # 默认本地文件
+SOURCE_URL = os.getenv("SOURCE_URL", "./link.csv")  # 恢复兜底值，避免None
 RESULT_FILE = "./result.json"
 AUTHOR_URL = os.getenv("AUTHOR_URL","www.dao.js.cn")  # 作者URL，用于检测反链
 api_request_queue = Queue()
@@ -217,34 +218,39 @@ def handle_api_requests(session):
         item = api_request_queue.get()
         link = item['link']
         api_url = f"https://v2.xxapi.cn/api/status?url={link}"
-        response, latency = request_url(session, api_url, headers=RAW_HEADERS, desc="API 检查", timeout=30)
+        # api_latency：API请求自身的延迟，和目标链接无关
+        response, api_latency = request_url(session, api_url, headers=RAW_HEADERS, desc="API 检查", timeout=30)
         has_author_link = False
+        # 初始化目标链接的延迟为-1（失败）
+        target_latency = -1
         
         if response:
             try:
                 res_json = response.json()
-                # ========== 关键修改：只有data=200才算成功 ==========
-                api_code = int(res_json.get("code"))
-                target_status = int(res_json.get("data"))
+                # ========== 关键修改1：明确拆分API码和目标状态码 ==========
+                api_code = int(res_json.get("code", 0))
+                target_status = int(res_json.get("data", 0))
+                
                 if api_code == 200 and target_status == 200:
                     logging.info(f"[API] 成功访问: {link} ，状态码 200")
-                    item['latency'] = latency
+                    # 目标链接成功，用API延迟作为参考（或你也可以设为0/自定义值）
+                    target_latency = api_latency
                     
                     # 如果API检测成功且有linkpage字段，检测友链页面
                     if 'linkpage' in item and item['linkpage'] and AUTHOR_URL:
                         has_author_link = check_author_link_in_page(session, item['linkpage'])
                 else:
-                    # 只要target_status不是200，都算失败
+                    # 只要target_status不是200，都算失败，target_latency保持-1
                     logging.warning(f"[API] 状态异常: {link} -> [{api_code}, {target_status}] (访问失败)")
-                    item['latency'] = -1  # 标记为失败
-                # ==============================================
             except Exception as e:
                 logging.error(f"[API] 解析响应失败: {link}，错误: {e}")
-                item['latency'] = -1
+                # 解析失败，保持target_latency=-1
         else:
-            item['latency'] = -1
+            # API请求失败，保持target_latency=-1
+            logging.warning(f"[API] 请求失败: {link}")
         
-        results.append((item, item.get('latency', -1), has_author_link))
+        # ========== 关键修改2：用target_latency传递状态，而非item['latency'] ==========
+        results.append((item, target_latency, has_author_link))
     return results
 
 def main():
@@ -280,6 +286,7 @@ def main():
 
                 prev_entry = next((x for x in previous_results.get("link_status", []) if x.get("link") == link), {})
                 prev_fail_count = prev_entry.get("fail_count", 0)
+                # 核心判断：latency=-1 就是失败，否则成功
                 fail_count = prev_fail_count + 1 if latency == -1 else 0
 
                 link_status.append({
@@ -287,8 +294,8 @@ def main():
                     'link': link,
                     'latency': latency,
                     'fail_count': fail_count,
-                    'has_author_link': has_author_link,  # 新增字段
-                    'linkpage': item.get('linkpage', '')  # 保留linkpage信息
+                    'has_author_link': has_author_link,
+                    'linkpage': item.get('linkpage', '')
                 })
             except Exception as e:
                 logging.error(f"处理链接时发生错误: {item}, 错误: {e}")
@@ -303,8 +310,8 @@ def main():
             "accessible_count": accessible,
             "inaccessible_count": total - accessible,
             "total_count": total,
-            "has_author_link_count": has_author_count,  # 新增统计
-            "author_url": AUTHOR_URL,  # 记录使用的作者URL
+            "has_author_link_count": has_author_count,
+            "author_url": AUTHOR_URL,
             "link_status": link_status
         }
 
