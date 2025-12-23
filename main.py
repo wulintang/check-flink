@@ -46,7 +46,7 @@ RAW_HEADERS = {  # 仅用于获取原始数据，防止接收到Accept-Language�
 
 PROXY_URL_TEMPLATE = f"{os.getenv('PROXY_URL')}{{}}" if os.getenv("PROXY_URL") else None
 # 找到这行代码：
-SOURCE_URL = os.getenv("SOURCE_URL","./link.csv")  # 默认本地文件
+SOURCE_URL = os.getenv("./link.csv")  # 默认本地文件
 
 # 紧接着添加这3行：
 print("=== 关键调试信息 ===")
