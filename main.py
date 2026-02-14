@@ -46,7 +46,8 @@ LINK_WHITELIST = [
     "https://limitz.top/",
     "https://www.lihaoyu.cn/",
     "https://www.imuu.cn/",
-    "https://www.liuzhixi.cn/"
+    "https://www.liuzhixi.cn/",
+    "https://u.sb/"
     # 可继续添加需要跳过反链检测的链接
 ]
 # =====================================================
