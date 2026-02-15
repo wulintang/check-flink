@@ -255,6 +255,12 @@ def check_link(item, session):
     api_request_queue.put(item)
     return item, -1, has_author_link
 
+import time
+import logging
+# 假设以下变量和函数已在其他地方定义
+# api_request_queue, ACCESS_WHITELIST, LINK_WHITELIST, RAW_HEADERS, AUTHOR_URL
+# request_url(), check_author_link_in_page()
+
 def handle_api_requests(session):
     results = []
     while not api_request_queue.empty():
@@ -272,15 +278,17 @@ def handle_api_requests(session):
             continue
         # ================================================
         
-        api_url = f"https://v2.xxapi.cn/api/status?url={link}"
+        # 替换为新的API地址
+        api_url = f"https://v.api.aa1.cn/api/httpcode/?url={link}"
         response, latency = request_url(session, api_url, headers=RAW_HEADERS, desc="API 检查", timeout=30)
         has_author_link = False
         
         if response:
             try:
                 res_json = response.json()
-                if int(res_json.get("code")) == 200 and int(res_json.get("data")) == 200:
-                    logging.info(f"[API] 成功访问: {link} ，状态码 200")
+                # 适配新API的返回格式：判断接口本身调用成功（code=200）且目标URL的httpcode=200
+                if int(res_json.get("code")) == 200 and int(res_json.get("httpcode")) == 200:
+                    logging.info(f"[API] 成功访问: {link} ，状态码 {res_json.get('httpcode')}")
                     item['latency'] = latency
                     
                     # 反链白名单判断
@@ -290,7 +298,11 @@ def handle_api_requests(session):
                     elif 'linkpage' in item and item['linkpage'] and AUTHOR_URL:
                         has_author_link = check_author_link_in_page(session, item['linkpage'])
                 else:
-                    logging.warning(f"[API] 状态异常: {link} -> [{res_json.get('code')}, {res_json.get('data')}]")
+                    # 输出新API的异常状态（接口返回码 + 目标URL的HTTP状态码）
+                    logging.warning(
+                        f"[API] 状态异常: {link} -> "
+                        f"[接口返回码: {res_json.get('code')}, 目标HTTP码: {res_json.get('httpcode')}]"
+                    )
                     item['latency'] = -1
             except Exception as e:
                 logging.error(f"[API] 解析响应失败: {link}，错误: {e}")
