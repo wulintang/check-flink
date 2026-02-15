@@ -278,36 +278,37 @@ def handle_api_requests(session):
             continue
         # ================================================
         
-        # 替换为新的API地址
-        api_url = f"https://v.api.aa1.cn/api/httpcode/?url={link}"
+        # 替换为最终确定的新API地址
+        api_url = f"https://uapis.cn/api/v1/network/urlstatus?url={link}"
         response, latency = request_url(session, api_url, headers=RAW_HEADERS, desc="API 检查", timeout=30)
         has_author_link = False
         
         if response:
             try:
                 res_json = response.json()
-                # 适配新API的返回格式：判断接口本身调用成功（code=200）且目标URL的httpcode=200
-                if int(res_json.get("code")) == 200 and int(res_json.get("httpcode")) == 200:
-                    logging.info(f"[API] 成功访问: {link} ，状态码 {res_json.get('httpcode')}")
+                # 适配新接口：仅判断status字段是否为200（HTTP成功状态）
+                if int(res_json.get("status")) == 200:
+                    logging.info(f"[API] 成功访问: {link} ，HTTP状态码 {res_json.get('status')}")
                     item['latency'] = latency
                     
-                    # 反链白名单判断
+                    # 反链白名单判断逻辑保持不变
                     if link in LINK_WHITELIST:
                         has_author_link = True
                         logging.info(f"[白名单] {link} 属于反链白名单，标记为有反链")
                     elif 'linkpage' in item and item['linkpage'] and AUTHOR_URL:
                         has_author_link = check_author_link_in_page(session, item['linkpage'])
                 else:
-                    # 输出新API的异常状态（接口返回码 + 目标URL的HTTP状态码）
+                    # 输出目标URL的HTTP异常状态码
                     logging.warning(
-                        f"[API] 状态异常: {link} -> "
-                        f"[接口返回码: {res_json.get('code')}, 目标HTTP码: {res_json.get('httpcode')}]"
+                        f"[API] 状态异常: {link} -> [目标HTTP状态码: {res_json.get('status')}]"
                     )
                     item['latency'] = -1
             except Exception as e:
                 logging.error(f"[API] 解析响应失败: {link}，错误: {e}")
                 item['latency'] = -1
         else:
+            # API请求本身失败（无响应）
+            logging.warning(f"[API] 请求失败: {link} ，未获取到响应")
             item['latency'] = -1
         
         results.append((item, item.get('latency', -1), has_author_link))
