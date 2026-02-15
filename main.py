@@ -25,7 +25,7 @@ ACCESS_WHITELIST = [
     "https://www.gymxbl.com/",
     "https://www.quji.org/",
     "https://www.52txr.cn/",
-    "https://www.dalao.net"
+    "https://www.dalao.net/"
     # 可继续添加需要跳过访问检测的链接
 ]
 
